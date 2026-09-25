@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fieldwork</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0e1014; --panel:#12151a; --panel2:#171b21; --line:#252a32; --line2:#303642;
+  --ink:#e8e6df; --dim:#9aa0a8; --faint:#6b717a;
+  --amber:#e8b25c; --amber2:#f3c97f; --green:#7cc38b; --red:#e07a6f; --blue:#7fa8d9; --violet:#b39ddb;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font:14px/1.45 'IBM Plex Sans',system-ui,sans-serif}
+.mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+button{font:inherit;cursor:pointer}
+a{color:var(--amber)}
+input,select,textarea{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line2);border-radius:6px;padding:7px 9px}
+textarea{font-family:'IBM Plex Mono',monospace;font-size:12px}
+input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
+.btn{background:var(--panel2);border:1px solid var(--line2);color:var(--ink);border-radius:6px;padding:7px 12px}
+.btn:hover{border-color:var(--amber)}
+.btn.primary{background:var(--amber);border-color:var(--amber);color:#1a1307;font-weight:600}
+.btn.primary:hover{background:var(--amber2)}
+.btn.small{padding:4px 9px;font-size:12px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+
+/* shell */
+.app{display:grid;grid-template-columns:232px 1fr;height:100vh}
+nav.side{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:18px 12px;gap:4px;overflow:auto}
+.brand{display:flex;align-items:center;gap:10px;padding:0 8px 16px}
+.brand b{font-size:17px;letter-spacing:.2px}
+.brand small{display:block;color:var(--faint);font-size:11px}
+.navbtn{display:flex;justify-content:space-between;align-items:center;width:100%;text-align:left;background:none;border:0;color:var(--dim);padding:8px 10px;border-radius:6px}
+.navbtn:hover{background:var(--panel2);color:var(--ink)}
+.navbtn.on{background:var(--panel2);color:var(--ink);box-shadow:inset 2px 0 0 var(--amber)}
+.navbtn .ct{font-size:11px;color:var(--faint)}
+.side .sep{height:1px;background:var(--line);margin:10px 4px}
+.whoami{margin-top:auto;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:12px}
+.whoami .role{color:var(--amber);font-size:11px;text-transform:uppercase;letter-spacing:.6px}
+main{overflow:auto;padding:26px 32px 60px}
+h1{font-size:22px;margin:0 0 4px;font-weight:600}
+h2{font-size:15px;margin:0 0 12px;font-weight:600}
+.sub{color:var(--dim);margin:0 0 22px}
+.grid{display:grid;gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+.kpis{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.kpi .n{font-size:26px;font-weight:600}
+.kpi .l{color:var(--dim);font-size:12px}
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--line2);color:var(--dim);white-space:nowrap}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.on_track{color:var(--green)} .at_risk{color:var(--amber)} .blocked{color:var(--red)}
+.open{color:var(--dim)} .in_progress{color:var(--blue)} .done{color:var(--green)}
+.apply,.met{color:var(--green)} .arguable{color:var(--amber)} .open_question,.unknown{color:var(--blue)} .missing{color:var(--red)}
+.pill.plain::before{display:none}
+
+/* chain board */
+.board{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(160px,1fr);gap:10px;overflow-x:auto;padding-bottom:6px}
+.col{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:160px}
+.col h3{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:var(--dim);margin:2px 4px 10px;display:flex;justify-content:space-between}
+.dcard{display:block;width:100%;text-align:left;background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:10px;margin-bottom:8px;color:var(--ink)}
+.dcard:hover{border-color:var(--amber)}
+.dcard .c{color:var(--dim);font-size:12px}
+.dcard .t{font-weight:600;margin:2px 0 6px}
+
+/* chain progress */
+.chain{display:flex;gap:4px;margin:14px 0 4px;flex-wrap:wrap}
+.step{flex:1;min-width:90px;padding:8px 10px;border:1px solid var(--line2);border-radius:6px;font-size:12px;color:var(--faint);background:var(--panel)}
+.step.past{color:var(--dim);border-color:#3b4f40}
+.step.now{color:var(--ink);border-color:var(--amber);background:#1d1a13}
+.step small{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.6px}
+
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-weight:500;color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.6px;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.spacer{flex:1}
+.muted{color:var(--dim)} .faint{color:var(--faint)}
+.two{grid-template-columns:1.4fr 1fr}
+@media (max-width:1100px){.two{grid-template-columns:1fr}}
+.engine-tag{font-size:11px;color:var(--violet)}
+.bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden;display:flex}
+.bar i{display:block;height:100%}
+.hash{font-size:11px;color:var(--faint);word-break:break-all}
+.toast{position:fixed;right:20px;bottom:20px;background:var(--panel2);border:1px solid var(--line2);padding:10px 14px;border-radius:8px;max-width:420px;box-shadow:0 8px 30px #0008;display:none}
+.toast.err{border-color:var(--red)}
+.empty{color:var(--faint);padding:18px;text-align:center;border:1px dashed var(--line2);border-radius:8px}
+details summary{cursor:pointer;color:var(--dim)}
+.perm td,.perm th{text-align:center}
+.perm td:first-child,.perm th:first-child{text-align:left}
+label.f{display:grid;gap:4px;font-size:12px;color:var(--dim)}
+
+/* sign in */
+.signin{max-width:440px;margin:12vh auto;padding:0 16px}
+.signin .card{padding:24px}
+@media (max-width:760px){
+  .app{grid-template-columns:1fr;height:auto}
+  nav.side{flex-direction:row;flex-wrap:wrap;padding:10px}
+  .brand,.whoami,.side .sep{display:none}
+  .navbtn{width:auto}
+  main{padding:18px 16px 60px}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+const S = { token: null, me: null, cfg: null, engines: null, view: "overview", dep: null };
+try { S.token = sessionStorage.getItem("fw_token"); } catch (e) {}
+
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const $ = s => document.querySelector(s);
+const can = a => S.me && S.me.can.includes(a);
+const stageName = k => (S.cfg.stages.find(s => s.key === k) || {name: k}).name;
+const pill = (cls, txt) => `<span class="pill ${esc(cls)}">${esc(txt ?? cls.replace(/_/g, " "))}</span>`;
+const fmtDate = s => s ? String(s).slice(0, 10) : "—";
+
+function toast(msg, err) {
+  const t = $("#toast"); t.textContent = msg; t.className = "toast" + (err ? " err" : "");
+  t.style.display = "block"; clearTimeout(toast._t); toast._t = setTimeout(() => t.style.display = "none", 4200);
+}
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {
+    ...opts,
+    headers: { "Content-Type": "application/json", ...(S.token ? { Authorization: "Bearer " + S.token } : {}) },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  let j = null; try { j = await r.json(); } catch (e) {}
+  if (r.status === 401) { signOut(); throw new Error("signed out"); }
+  if (!r.ok) {
+    const d = j && j.detail; const msg = Array.isArray(d) ? d.map(x => x.msg).join("; ") : (d || r.statusText);
+    throw new Error(msg);
+  }
+  return j;
+}
+const act = fn => async (...a) => { try { await fn(...a); } catch (e) { if (e.message !== "signed out") toast(e.message, true); } };
+
+function signOut() { S.token = null; S.me = null; try { sessionStorage.removeItem("fw_token"); } catch (e) {} renderSignIn(); }
+
+async function signIn(token) {
+  S.token = token.trim();
+  try { S.me = await api("/api/me"); } catch (e) { S.token = null; toast("That token wasn't accepted", true); return; }
+  try { sessionStorage.setItem("fw_token", S.token); } catch (e) {}
+  const c = await api("/api/config"); S.cfg = c.config; S.meta = c; S.engines = c.engines;
+  S.view = "overview"; S.dep = null; render();
+}
+
+async function renderSignIn() {
+  let demos = [];
+  try { demos = await (await fetch("/api/demo")).json(); if (!Array.isArray(demos)) demos = []; } catch (e) {}
+  $("#root").innerHTML = `
+  <div class="signin">
+    <div class="brand" style="padding:0 0 18px">${logo()}<div><b>Fieldwork</b><small>Operating platform for FDE teams</small></div></div>
+    <div class="card grid">
+      <h2>Sign in</h2>
+      <label class="f">Access token<input id="tok" type="password" autocomplete="off"></label>
+      <button class="btn primary" id="go">Sign in</button>
+      ${demos.length ? `<div class="sep" style="height:1px;background:var(--line);margin:6px 0"></div>
+        <div class="muted" style="font-size:12px">Demo workspace · Meridian AI</div>
+        <div class="grid" style="gap:8px">${demos.map((d, i) => `<button class="btn" data-demo="${i}">${esc(d.label)}</button>`).join("")}</div>` : ""}
+    </div>
+  </div>`;
+  $("#go").onclick = () => signIn($("#tok").value);
+  $("#tok").onkeydown = e => { if (e.key === "Enter") signIn($("#tok").value); };
+  document.querySelectorAll("[data-demo]").forEach(b => b.onclick = () => signIn(demos[+b.dataset.demo].token));
+}
+
+function logo() {
+  return `<svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="#e8b25c" stroke-width="1.8" aria-hidden="true"><path d="M3 20 L9 8 L14 16 L18 10 L23 20"/><path d="M3 22 H23" stroke-opacity=".5"/></svg>`;
+}
+
+function render() {
+  const items = [
+    ["overview", "Overview", true],
+    ["deployments", can("deployment.read_all") ? "Deployments" : "My deployments", true],
+    ["tasks", "My work", true],
+    ["team", "Team", can("people.read")],
+    ["audit", "Audit trail", can("audit.read")],
+    ["settings", "Workspace settings", can("config.edit")],
+  ].filter(x => x[2]);
+  $("#root").innerHTML = `
+  <div class="app">
+    <nav class="side" aria-label="Main">
+      <div class="brand">${logo()}<div><b>Fieldwork</b><small>${esc(S.me.tenant.name)}</small></div></div>
+      ${items.map(([k, l]) => `<button class="navbtn ${S.view === k || (k === "deployments" && S.view === "deployment") ? "on" : ""}" data-v="${k}">${esc(l)}</button>`).join("")}
+      <div class="whoami">
+        <div class="role">${esc(S.me.user.role_label)}</div>
+        <div>${esc(S.me.user.name)}</div>
+        <div class="faint">${esc(S.me.user.email)}</div>
+        <button class="btn small" style="margin-top:8px" id="out">Sign out</button>
+      </div>
+    </nav>
+    <main id="main"><div class="faint">Loading…</div></main>
+  </div>`;
+  document.querySelectorAll("[data-v]").forEach(b => b.onclick = () => { S.view = b.dataset.v; S.dep = null; render(); });
+  $("#out").onclick = signOut;
+  const views = { overview, deployments, deployment: deploymentView, tasks: tasksView, team, audit: auditView, settings };
+  act(views[S.view])();
+}
+
+function openDep(id) { S.view = "deployment"; S.dep = id; render(); }
+function bindDeps() { document.querySelectorAll("[data-dep]").forEach(b => b.onclick = () => openDep(b.dataset.dep)); }
+
+/* ------------------------------------------------------------- overview */
+async function overview() {
+  const [d, deps] = await Promise.all([api("/api/dashboard"), api("/api/deployments")]);
+  const lead = can("deployment.read_all")
+    ? "Every deployment in the workspace, by stage."
+    : "The deployments you're on, and what's waiting for you.";
+  $("#main").innerHTML = `
+    <h1>${can("people.read") ? "Deployments at a glance" : "Good to see you, " + esc(S.me.user.name.split(" ")[0])}</h1>
+    <p class="sub">${lead}</p>
+    <div class="grid kpis">
+      <div class="card kpi"><div class="n">${d.deployments}</div><div class="l">Deployments</div></div>
+      <div class="card kpi"><div class="n at_risk">${d.health.at_risk}</div><div class="l">At risk</div></div>
+      <div class="card kpi"><div class="n blocked">${d.health.blocked}</div><div class="l">Blocked</div></div>
+      <div class="card kpi"><div class="n">${d.my_open_tasks}</div><div class="l">My open tasks${d.my_blocked ? ` · <span class="blocked">${d.my_blocked} blocked</span>` : ""}</div></div>
+      ${d.unconfirmed_findings != null ? `<div class="card kpi"><div class="n">${d.unconfirmed_findings}</div><div class="l">Findings awaiting confirmation</div></div>` : ""}
+    </div>
+    <h2 style="margin-top:26px">The chain</h2>
+    ${chainBoard(deps)}
+    ${d.team ? `<h2 style="margin-top:26px">Team load</h2>
+      <div class="card"><table><thead><tr><th>Person</th><th>Deployments</th><th>Open tasks</th></tr></thead><tbody>
+      ${d.team.map(p => `<tr><td>${esc(p.name)}</td><td>${p.deployments}</td><td>${p.open_tasks}</td></tr>`).join("")}
+      </tbody></table></div>` : ""}`;
+  bindDeps();
+}
+
+function chainBoard(deps) {
+  return `<div class="board">${S.cfg.stages.map(s => {
+    const here = deps.filter(d => d.stage === s.key);
+    const eng = S.engines[s.engine] || {};
+    return `<div class="col"><h3><span>${esc(s.name)}</span><span>${here.length}</span></h3>
+      <div class="engine-tag" style="margin:-6px 4px 10px">${esc(eng.name || "")}${eng.status === "planned" ? " · planned" : ""}</div>
+      ${here.map(d => `<button class="dcard" data-dep="${esc(d.id)}">
+        <div class="c">${esc(d.customer)}</div><div class="t">${esc(d.name)}</div>
+        <div class="row">${pill(d.health)}<span class="faint" style="font-size:11px">${d.members.map(m => esc(m.name.split(" ")[0])).join(", ")}</span></div>
+      </button>`).join("") || `<div class="faint" style="font-size:12px;padding:4px">—</div>`}
+    </div>`;
+  }).join("")}</div>`;
+}
+
+/* ---------------------------------------------------------- deployments */
+async function deployments() {
+  const [deps, customers] = await Promise.all([api("/api/deployments"), api("/api/customers")]);
+  let people = [];
+  if (can("people.read")) people = await api("/api/people");
+  $("#main").innerHTML = `
+    <div class="row"><div><h1>${can("deployment.read_all") ? "Deployments" : "My deployments"}</h1>
+    <p class="sub">${deps.length} active</p></div><div class="spacer"></div>
+    ${can("deployment.create") ? `<button class="btn primary" id="newdep">New deployment</button>` : ""}</div>
+    <div id="newform"></div>
+    <div class="card"><table><thead><tr><th>Customer</th><th>Deployment</th><th>Stage</th><th>Health</th><th>Team</th><th>Tasks</th></tr></thead><tbody>
+    ${deps.map(d => `<tr><td>${esc(d.customer)}</td><td><a href="#" data-dep="${esc(d.id)}">${esc(d.name)}</a></td>
+      <td>${esc(stageName(d.stage))}</td><td>${pill(d.health)}</td>
+      <td class="muted">${d.members.map(m => esc(m.name)).join(", ")}</td>
+      <td class="muted">${Object.entries(d.tasks).map(([k, v]) => `${v} ${k.replace("_", " ")}`).join(" · ") || "—"}</td></tr>`).join("")
+      || `<tr><td colspan="6"><div class="empty">You're not on any deployments yet.</div></td></tr>`}
+    </tbody></table></div>`;
+  document.querySelectorAll("[data-dep]").forEach(a => a.onclick = e => { e.preventDefault(); openDep(a.dataset.dep); });
+  const nb = $("#newdep");
+  if (nb) nb.onclick = () => {
+    $("#newform").innerHTML = `<div class="card grid" style="margin-bottom:14px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+      <label class="f">Customer<select id="nd_c">${customers.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")}</select></label>
+      <label class="f">Deployment name<input id="nd_n" placeholder="e.g. Invoice exception agent"></label>
+      <label class="f">Lead<select id="nd_l"><option value="">—</option>${people.filter(p => p.role === "fde").map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select></label>
+      ${fieldInputs("deployment", {})}
+      <div class="row" style="align-self:end"><button class="btn primary" id="nd_go">Open deployment</button></div>
+    </div>`;
+    $("#nd_go").onclick = act(async () => {
+      const r = await api("/api/deployments", { method: "POST", body: {
+        customer_id: $("#nd_c").value, name: $("#nd_n").value, lead_id: $("#nd_l").value || null, fields: readFields("deployment") } });
+      toast("Deployment opened"); openDep(r.id);
+    });
+  };
+}
+
+function fieldInputs(scope, values) {
+  return S.cfg.fields[scope].map(f => {
+    const v = values[f.key] ?? "";
+    const id = `fld_${scope}_${f.key}`;
+    let input;
+    if (f.type === "select") input = `<select id="${id}"><option value=""></option>${f.options.map(o => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
+    else if (f.type === "bool") input = `<input id="${id}" type="checkbox" ${v ? "checked" : ""}>`;
+    else input = `<input id="${id}" type="${f.type === "number" ? "number" : f.type === "date" ? "date" : "text"}" value="${esc(v)}">`;
+    return `<label class="f">${esc(f.label)}${input}</label>`;
+  }).join("");
+}
+function readFields(scope) {
+  const out = {};
+  S.cfg.fields[scope].forEach(f => {
+    const el = document.getElementById(`fld_${scope}_${f.key}`); if (!el) return;
+    out[f.key] = f.type === "bool" ? el.checked : el.value;
+  });
+  return out;
+}
+
+/* ---------------------------------------------------- deployment detail */
+async function deploymentView() {
+  const id = S.dep;
+  const [d, tasks, findings] = await Promise.all([
+    api(`/api/deployments/${id}`), api(`/api/tasks?deployment_id=${encodeURIComponent(id)}`),
+    api(`/api/deployments/${id}/findings`)]);
+  let people = [];
+  if (can("people.read")) people = await api("/api/people");
+  const keys = S.cfg.stages.map(s => s.key);
+  const idx = keys.indexOf(d.stage);
+  const stage = S.cfg.stages[idx] || { name: d.stage, engine: "none", exit_criteria: "" };
+  const eng = S.engines[stage.engine] || {};
+  const isMember = d.members.some(m => m.id === S.me.user.id);
+  const canEdit = can("deployment.create") || isMember;
+  const next = keys[idx + 1];
+
+  $("#main").innerHTML = `
+    <button class="btn small" id="back">← ${can("deployment.read_all") ? "Deployments" : "My deployments"}</button>
+    <div class="row" style="margin-top:14px"><div>
+      <div class="muted">${esc(d.customer)}</div><h1>${esc(d.name)}</h1></div>
+      <div class="spacer"></div>
+      ${canEdit ? `<select id="health" aria-label="Health">${["on_track", "at_risk", "blocked"].map(h => `<option value="${h}" ${h === d.health ? "selected" : ""}>${h.replace("_", " ")}</option>`).join("")}</select>` : pill(d.health)}
+    </div>
+    <div class="chain">${S.cfg.stages.map((s, i) => `<div class="step ${i < idx ? "past" : i === idx ? "now" : ""}"><small>${i + 1}</small>${esc(s.name)}</div>`).join("")}</div>
+    <div class="card" style="margin-top:12px">
+      <div class="row"><div><div class="faint" style="font-size:11px;text-transform:uppercase;letter-spacing:.6px">Exit criteria · ${esc(stage.name)}</div>
+      <div>${esc(stage.exit_criteria || "None set")}</div></div><div class="spacer"></div>
+      ${can("deployment.advance") && (isMember || can("deployment.read_all")) ? `
+        ${S.me.user.role === "fde" ? (next ? `<button class="btn primary" id="adv" data-to="${esc(next)}">Advance to ${esc(stageName(next))}</button>` : "")
+        : `<select id="advto">${S.cfg.stages.map(s => `<option value="${esc(s.key)}" ${s.key === next ? "selected" : ""} ${s.key === d.stage ? "disabled" : ""}>${esc(s.name)}</option>`).join("")}</select>
+           <input id="advnote" placeholder="Note (required to move back)" style="min-width:220px">
+           <button class="btn primary" id="adv">Move</button>`}` : ""}
+      </div>
+    </div>
+
+    <div class="grid two" style="margin-top:14px">
+      <div class="grid">
+        <div class="card">
+          <div class="row"><h2 style="margin:0">Engine · ${esc(eng.name || "none")}</h2><div class="spacer"></div>
+          ${eng.status === "live" ? pill("done", "live") : eng.status === "planned" ? `<span class="pill plain faint">planned</span>` : ""}</div>
+          <p class="muted" style="margin:6px 0 12px">${esc(eng.does || "")}</p>
+          <div id="enginePanel"></div>
+        </div>
+        <div class="card"><h2>Findings</h2><div id="findings"></div></div>
+      </div>
+      <div class="grid">
+        <div class="card"><div class="row"><h2 style="margin:0">Tasks</h2></div>
+          <div id="tasklist" style="margin-top:10px"></div>
+          ${can("task.create") && (isMember || S.me.user.role !== "fde") ? `
+          <div class="row" style="margin-top:12px">
+            <input id="nt" placeholder="New task" style="flex:1;min-width:160px">
+            ${can("task.assign") ? `<select id="nta"><option value="">Me</option>${people.filter(p => p.id !== S.me.user.id).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select>` : ""}
+            <input id="ntd" type="date" aria-label="Due">
+            <button class="btn" id="ntgo">Add</button></div>` : ""}
+        </div>
+        <div class="card"><div class="row"><h2 style="margin:0">Team</h2></div>
+          <div style="margin-top:10px">${d.members.map(m => `<div class="row" style="padding:4px 0"><span>${esc(m.name)}</span>${m.id === d.lead_id ? `<span class="pill plain">lead</span>` : ""}<div class="spacer"></div>
+          ${can("deployment.staff") ? `<button class="btn small" data-rm="${esc(m.id)}">Remove</button>` : ""}</div>`).join("")}</div>
+          ${can("deployment.staff") ? `<div class="row" style="margin-top:8px"><select id="addm">${people.filter(p => !d.members.some(m => m.id === p.id)).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select><button class="btn small" id="addmgo">Add to team</button></div>` : ""}
+        </div>
+        ${S.cfg.fields.deployment.length ? `<div class="card grid"><h2 style="margin:0">Details</h2>${fieldInputs("deployment", d.fields)}
+          ${canEdit ? `<button class="btn small" id="savef" style="justify-self:start">Save details</button>` : ""}</div>` : ""}
+        <div class="card"><h2>History</h2>${d.history.map(h => `<div style="padding:4px 0;font-size:12px"><span class="faint mono">${fmtDate(h.at)}</span> ${esc(h.actor)} → <b>${esc(stageName(h.to_stage))}</b>${h.note ? ` <span class="muted">· ${esc(h.note)}</span>` : ""}</div>`).join("")}</div>
+      </div>
+    </div>`;
+
+  $("#back").onclick = () => { S.view = "deployments"; S.dep = null; render(); };
+  const reload = () => act(deploymentView)();
+  const h = $("#health"); if (h) h.onchange = act(async () => { await api(`/api/deployments/${id}`, { method: "PATCH", body: { health: h.value } }); toast("Health updated"); });
+  const adv = $("#adv");
+  if (adv) adv.onclick = act(async () => {
+    const to = adv.dataset.to || $("#advto").value;
+    await api(`/api/deployments/${id}/advance`, { method: "POST", body: { to_stage: to, note: ($("#advnote") || {}).value || "" } });
+    toast(`Moved to ${stageName(to)}`); reload();
+  });
+  const sf = $("#savef"); if (sf) sf.onclick = act(async () => { await api(`/api/deployments/${id}`, { method: "PATCH", body: { fields: readFields("deployment") } }); toast("Saved"); });
+  document.querySelectorAll("[data-rm]").forEach(b => b.onclick = act(async () => { await api(`/api/deployments/${id}/members/${b.dataset.rm}`, { method: "DELETE" }); reload(); }));
+  const am = $("#addmgo"); if (am) am.onclick = act(async () => { await api(`/api/deployments/${id}/members`, { method: "POST", body: { user_id: $("#addm").value } }); reload(); });
+  const nt = $("#ntgo"); if (nt) nt.onclick = act(async () => {
+    await api("/api/tasks", { method: "POST", body: { deployment_id: id, title: $("#nt").value, assignee_id: ($("#nta") || {}).value || null, due: $("#ntd").value || null } });
+    reload();
+  });
+
+  renderTasks(tasks, $("#tasklist"), reload);
+  renderFindings(findings, reload);
+  renderEngine(stage, eng, d, reload);
+}
+
+function renderTasks(tasks, el, reload, showDep) {
+  if (!tasks.length) { el.innerHTML = `<div class="empty">No tasks.</div>`; return; }
+  el.innerHTML = `<table><tbody>${tasks.map(t => {
+    const mine = t.assignee_id === S.me.user.id || can("task.assign");
+    return `<tr><td style="width:40%">${esc(t.title)}${showDep ? `<div class="faint" style="font-size:12px">${esc(t.deployment)}</div>` : ""}</td>
+      <td class="muted">${esc(t.assignee || "—")}</td><td class="faint mono" style="font-size:12px">${fmtDate(t.due)}</td>
+      <td>${mine ? `<select data-task="${esc(t.id)}" aria-label="Status">${["open", "in_progress", "blocked", "done"].map(s => `<option value="${s}" ${s === t.status ? "selected" : ""}>${s.replace("_", " ")}</option>`).join("")}</select>` : pill(t.status)}</td></tr>`;
+  }).join("")}</tbody></table>`;
+  el.querySelectorAll("[data-task]").forEach(s => s.onchange = act(async () => {
+    await api(`/api/tasks/${s.dataset.task}`, { method: "PATCH", body: { status: s.value } }); toast("Task updated"); reload();
+  }));
+}
+
+function renderFindings(findings, reload) {
+  const el = $("#findings");
+  if (!findings.length) { el.innerHTML = `<div class="empty">No engine runs on this deployment yet.</div>`; return; }
+  el.innerHTML = findings.map(f => `<div style="padding:10px 0;border-bottom:1px solid var(--line)">
+    <div class="row"><b>${esc(f.title)}</b><span class="engine-tag">${esc(f.engine)}</span><div class="spacer"></div>
+    ${f.confirmed_by ? pill("done", "confirmed · " + f.confirmed_by_name)
+      : can("finding.confirm") && f.created_by !== S.me.user.id ? `<button class="btn small" data-confirm="${esc(f.id)}">Confirm</button>` : `<span class="pill plain faint">awaiting confirmation</span>`}</div>
+    <div class="faint" style="font-size:12px">${esc(f.created_by_name)} · ${fmtDate(f.created_at)}</div>
+    <div style="margin-top:6px">${f.engine === "sendero" ? senderoSummary(f.result) : f.engine === "threshold" ? `<span class="muted">${f.result.ranked.length} people scored · top: ${esc(f.result.ranked[0]?.name)} (${esc(f.result.ranked[0]?.verdict.replace("_", " "))})</span>` : ""}</div>
+  </div>`).join("");
+  el.querySelectorAll("[data-confirm]").forEach(b => b.onclick = act(async () => { await api(`/api/findings/${b.dataset.confirm}/confirm`, { method: "POST" }); toast("Finding confirmed into the record"); reload(); }));
+}
+
+function senderoSummary(r) {
+  const b = Math.round(r.build_score * 100);
+  const col = r.classification === "BUILD" ? "var(--red)" : r.classification === "TRAINING" ? "var(--blue)" : "var(--amber)";
+  return `<div class="row"><b style="color:${col}">${esc(r.classification)}</b><span class="muted">${r.confidence_pct}% confidence · n=${r.n}</span></div>
+    <div class="bar" style="margin:6px 0" title="build ${b}% / training ${100 - b}%"><i style="width:${b}%;background:var(--red)"></i><i style="width:${100 - b}%;background:var(--blue)"></i></div>
+    <div class="faint" style="font-size:11px" class="row">build ${b}% · training ${100 - b}%</div>`;
+}
+
+function renderEngine(stage, eng, d, reload) {
+  const el = $("#enginePanel");
+  const isMember = d.members.some(m => m.id === S.me.user.id);
+  const mayRun = can("engine.run") && (isMember || S.me.user.role !== "fde");
+  let html = "";
+  if (stage.engine === "sendero") {
+    html = mayRun ? `<div class="grid" style="gap:8px">
+      <label class="f">Friction point<input id="se_t" placeholder="e.g. Invoice exception handling time"></label>
+      <label class="f">Per-user data (CSV: one row per user, a metric column, cohort columns)<textarea id="se_csv" rows="6" placeholder="user_id,minutes,tenure_months,site"></textarea></label>
+      <div class="row"><label class="f">Metric column<input id="se_m" style="width:190px"></label>
+      <label class="f">Baseline<input id="se_b" type="number" step="any" style="width:100px"></label>
+      <label class="f">Higher is worse<select id="se_h"><option value="1">yes</option><option value="0">no</option></select></label></div>
+      <div class="row"><button class="btn primary" id="se_go">Classify</button><button class="btn" id="se_sample">Load sample data</button></div>
+      <div id="se_out"></div></div>` : `<div class="empty">Only this deployment's team can run it.</div>`;
+  }
+  // Bench matching (Threshold) is available at any stage to roles allowed to staff.
+  if (can("bench.match")) {
+    html += `<div style="${html ? "margin-top:18px;padding-top:14px;border-top:1px solid var(--line)" : ""}">
+      <div class="row"><b>Bench · Threshold</b><span class="muted" style="font-size:12px">who can staff this deployment</span></div>
+      <details style="margin:8px 0"><summary>Staffing requirements</summary>
+        <textarea id="th_req" rows="8" style="width:100%;margin-top:6px">${esc(d.staffing_req)}</textarea>
+        <button class="btn small" id="th_save">Save requirements</button></details>
+      <button class="btn" id="th_go">Match bench</button><div id="th_out" style="margin-top:10px"></div></div>`;
+  }
+  if (!html) html = eng.status === "planned"
+    ? `<div class="empty">This stage's engine isn't connected yet. Tasks and stage tracking work now; the engine plugs in here.</div>`
+    : `<div class="empty">No engine on this stage.</div>`;
+  else if (stage.engine !== "sendero" && eng.status === "planned")
+    html = `<div class="empty" style="margin-bottom:10px">${esc(eng.name)} isn't connected yet.</div>` + html;
+  el.innerHTML = html;
+
+  const go = $("#se_go");
+  if (go) {
+    $("#se_sample").onclick = act(async () => {
+      const s = await api("/api/demo/sample-csv");
+      $("#se_csv").value = s.csv; $("#se_m").value = s.metric; $("#se_b").value = s.baseline;
+      if (!$("#se_t").value) $("#se_t").value = "Invoice exception handling time";
+    });
+    go.onclick = act(async () => {
+      const b = $("#se_b").value;
+      const r = await api(`/api/deployments/${d.id}/engines/sendero`, { method: "POST", body: {
+        title: $("#se_t").value || "Friction point", csv: $("#se_csv").value, metric: $("#se_m").value.trim(),
+        baseline: b === "" ? null : +b, higher_is_worse: $("#se_h").value === "1" } });
+      const x = r.result;
+      $("#se_out").innerHTML = `<div class="card" style="background:var(--panel2);margin-top:8px">${senderoSummary(x)}
+        <p style="margin:10px 0 6px">${esc(x.recommendation)}</p>
+        <div class="muted" style="font-size:12px">${esc(x.level1_dispersion.reading)}</div>
+        <div class="muted" style="font-size:12px;margin-top:4px">${esc(x.level2_explanatory.reading)}</div>
+        <div class="faint" style="font-size:11px;margin-top:6px">Cohorts · capability: ${esc(x.cohorts.capability.join(", ") || "none")} · configuration: ${esc(x.cohorts.config.join(", ") || "none")}</div></div>`;
+      toast("Saved as a finding, awaiting confirmation");
+      renderFindings(await api(`/api/deployments/${d.id}/findings`), reload);
+    });
+  }
+  const ts = $("#th_save");
+  if (ts) ts.onclick = act(async () => { await api(`/api/deployments/${d.id}`, { method: "PATCH", body: { staffing_req: $("#th_req").value } }); d.staffing_req = $("#th_req").value; toast("Requirements saved"); });
+  const tg = $("#th_go");
+  if (tg) tg.onclick = act(async () => {
+    const r = await api(`/api/deployments/${d.id}/engines/threshold`, { method: "POST" });
+    $("#th_out").innerHTML = r.result.ranked.map(p => `<details style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <summary><span style="color:var(--ink)">${esc(p.name)}</span> ${pill(p.verdict)} <span class="faint" style="font-size:12px">${esc(p.summary)}</span></summary>
+      <table style="margin-top:6px"><tbody>${p.findings.map(f => `<tr><td style="font-size:12px">${f.gate ? "<b>gate</b> · " : ""}${esc(f.requirement)}</td>
+        <td>${pill(f.status)}</td><td class="faint" style="font-size:12px">${esc(f.detail)}${f.citations.length ? `<div class="mono">${f.citations.map(esc).join(", ")}</div>` : ""}</td></tr>`).join("")}</tbody></table></details>`).join("");
+    toast("Saved as a finding, awaiting confirmation");
+    renderFindings(await api(`/api/deployments/${d.id}/findings`), reload);
+  });
+}
+
+/* --------------------------------------------------------------- tasks */
+async function tasksView() {
+  const t = await api("/api/tasks?mine=true");
+  $("#main").innerHTML = `<h1>My work</h1><p class="sub">Tasks assigned to you across deployments.</p><div class="card" id="tl"></div>`;
+  renderTasks(t, $("#tl"), () => act(tasksView)(), true);
+}
+
+/* ---------------------------------------------------------------- team */
+async function team() {
+  const p = await api("/api/people");
+  $("#main").innerHTML = `<h1>Team</h1><p class="sub">${p.length} people in ${esc(S.me.tenant.name)}</p>
+    <div class="card"><table><thead><tr><th>Name</th><th>Role</th><th>Deployments</th><th>Open tasks</th></tr></thead><tbody>
+    ${p.map(x => `<tr><td>${esc(x.name)}<div class="faint" style="font-size:12px">${esc(x.email)}</div></td><td>${esc(S.cfg.labels[x.role])}</td><td>${x.deployments}</td><td>${x.open_tasks}</td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+
+/* --------------------------------------------------------------- audit */
+async function auditView() {
+  const rows = await api("/api/audit?limit=200");
+  $("#main").innerHTML = `<div class="row"><div><h1>Audit trail</h1><p class="sub">Every change, hash-chained. Editing or deleting any entry breaks every hash after it.</p></div>
+    <div class="spacer"></div>${can("audit.verify") ? `<button class="btn primary" id="ver">Verify chain</button>` : ""}</div>
+    <div id="vout"></div>
+    <div class="card"><table><thead><tr><th>#</th><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td class="mono faint">${r.seq}</td><td class="mono" style="font-size:12px">${esc(String(r.at).replace("T", " ").slice(0, 19))}</td><td>${esc(r.actor)}</td>
+      <td class="mono" style="font-size:12px">${esc(r.action)}</td><td style="font-size:12px"><span class="muted">${esc(Object.entries(r.detail).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · "))}</span>
+      <div class="hash mono">${esc(r.hash)}</div></td></tr>`).join("")}
+    </tbody></table></div>`;
+  const v = $("#ver");
+  if (v) v.onclick = act(async () => {
+    const x = await api("/api/audit/verify");
+    $("#vout").innerHTML = `<div class="card" style="margin-bottom:14px;border-color:${x.ok ? "#3b5b43" : "var(--red)"}">
+      ${x.ok ? `<b class="done">Chain intact</b> · ${x.entries} entries verified` : `<b class="blocked">Chain broken</b> at entry #${x.broken_at}`}
+      <div class="hash mono" style="margin-top:4px">head ${esc(x.head)}</div></div>`;
+  });
+}
+
+/* ------------------------------------------------------------ settings */
+async function settings() {
+  const meta = await api("/api/config");
+  const cfg = JSON.parse(JSON.stringify(meta.config));
+  const engOpts = Object.entries(meta.engines);
+  const draw = () => {
+    $("#main").innerHTML = `<h1>Workspace settings</h1><p class="sub">Your stages, roles, permissions and fields. Changes are validated and audited.</p>
+    <div class="grid">
+      <div class="card"><h2>Deployment chain</h2>
+        <table><thead><tr><th></th><th>Stage</th><th>Key</th><th>Engine</th><th>Exit criteria</th><th></th></tr></thead><tbody>
+        ${cfg.stages.map((s, i) => `<tr>
+          <td class="faint mono">${i + 1}</td>
+          <td><input data-s="${i}" data-k="name" value="${esc(s.name)}" style="width:130px"></td>
+          <td><input data-s="${i}" data-k="key" value="${esc(s.key)}" style="width:100px" class="mono"></td>
+          <td><select data-s="${i}" data-k="engine">${engOpts.map(([k, e]) => `<option value="${k}" ${k === s.engine ? "selected" : ""}>${esc(e.name)}${e.status === "planned" ? " (planned)" : ""}</option>`).join("")}</select></td>
+          <td><input data-s="${i}" data-k="exit_criteria" value="${esc(s.exit_criteria)}" style="width:100%;min-width:260px"></td>
+          <td style="white-space:nowrap"><button class="btn small" data-up="${i}" ${i ? "" : "disabled"} aria-label="Move up">↑</button>
+            <button class="btn small" data-del="${i}" aria-label="Remove stage">✕</button></td></tr>`).join("")}
+        </tbody></table>
+        <button class="btn small" id="addstage" style="margin-top:10px">Add stage</button>
+      </div>
+      <div class="card"><h2>Role names</h2><div class="row">
+        ${meta.roles.map(r => `<label class="f">${r}<input data-label="${r}" value="${esc(cfg.labels[r])}"></label>`).join("")}</div></div>
+      <div class="card"><h2>Permissions</h2>
+        <table class="perm"><thead><tr><th>Action</th>${meta.roles.map(r => `<th>${esc(cfg.labels[r])}</th>`).join("")}</tr></thead><tbody>
+        ${Object.entries(meta.actions).map(([a, desc]) => `<tr><td>${esc(desc)}<div class="faint mono" style="font-size:11px">${a}</div></td>
+          ${meta.roles.map(r => `<td><input type="checkbox" data-perm="${a}" data-role="${r}" ${cfg.permissions[a].includes(r) ? "checked" : ""} ${meta.locked[a] ? "disabled" : ""} aria-label="${esc(r + " " + a)}"></td>`).join("")}</tr>`).join("")}
+        </tbody></table></div>
+      <div class="card"><h2>Custom fields</h2><p class="muted" style="margin-top:0">JSON. Types: text, number, date, select (with options), bool.</p>
+        <textarea id="fields" rows="12" style="width:100%">${esc(JSON.stringify(cfg.fields, null, 2))}</textarea></div>
+      <div class="row"><button class="btn primary" id="savecfg">Save settings</button><button class="btn" id="resetcfg">Discard changes</button></div>
+    </div>`;
+    document.querySelectorAll("[data-s]").forEach(el => el.oninput = () => { cfg.stages[+el.dataset.s][el.dataset.k] = el.value; });
+    document.querySelectorAll("[data-label]").forEach(el => el.oninput = () => { cfg.labels[el.dataset.label] = el.value; });
+    document.querySelectorAll("[data-perm]").forEach(el => el.onchange = () => {
+      const set = new Set(cfg.permissions[el.dataset.perm]); el.checked ? set.add(el.dataset.role) : set.delete(el.dataset.role);
+      cfg.permissions[el.dataset.perm] = [...set];
+    });
+    document.querySelectorAll("[data-up]").forEach(b => b.onclick = () => { const i = +b.dataset.up; [cfg.stages[i - 1], cfg.stages[i]] = [cfg.stages[i], cfg.stages[i - 1]]; draw(); });
+    document.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { cfg.stages.splice(+b.dataset.del, 1); draw(); });
+    $("#addstage").onclick = () => { cfg.stages.push({ key: "stage_" + (cfg.stages.length + 1), name: "New stage", engine: "none", exit_criteria: "" }); draw(); };
+    $("#resetcfg").onclick = () => act(settings)();
+    $("#savecfg").onclick = act(async () => {
+      try { cfg.fields = JSON.parse($("#fields").value); } catch (e) { throw new Error("Custom fields isn't valid JSON"); }
+      const r = await api("/api/config", { method: "PUT", body: cfg });
+      S.cfg = r.config; S.me = await api("/api/me"); toast("Settings saved"); render();
+    });
+  };
+  draw();
+}
+
+S.token ? act(signIn)(S.token) : renderSignIn();
+</script>
+</body>
+</html>

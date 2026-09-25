@@ -1,0 +1,9 @@
+services:
+  fieldwork:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      FIELDWORK_DEMO: "1"
+    volumes: ["fieldwork-data:/data"]
+volumes:
+  fieldwork-data:
