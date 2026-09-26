@@ -360,10 +360,17 @@ def register(app, d) -> None:
                                  (tid, c.tenant_id, dep["id"], dep["stage"], r["title"][:200], a["id"] if a else c.uid,
                                   status, r.get("due") or None, c.uid, ts, ts, vis))
                     c.log("task.create", tid, {"deployment": dep["id"], "title": r["title"][:200], "via": "import"})
+                    if status == "blocked":
+                        from . import ops
+                        ops.on_task_status(conn, c.tenant_id, c.tenant_name, c.cfg,
+                                           {"id": tid, "deployment_id": dep["id"], "title": r["title"][:200],
+                                            "stage": dep["stage"], "assignee_id": a["id"] if a else c.uid,
+                                            "status": "open"}, "blocked")
                     trackers.queue_push(conn, c.tenant_id, c.cfg, dep, tid)
                     created += 1
         else:
-            raise HTTPException(422, "kind must be deployments or tasks")
+            from . import ops
+            created, errors = ops.import_rows(conn, c, body.kind, rows, people, d.visible_deployments(c))
         return {"created": created, "errors": errors}
 
     # -------------------------------------------------------- personal tokens

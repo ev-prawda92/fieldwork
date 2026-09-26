@@ -34,7 +34,7 @@ def test_own_scope_sees_only_staffed_deployments(client):
     assert {d["id"] for d in client.get("/api/deployments", headers=H("fde")).json()} == \
         {"dep_northfield", "dep_castellan"}
     assert client.get("/api/deployments/dep_harborview", headers=H("fde")).status_code == 404
-    assert len(client.get("/api/deployments", headers=H("head")).json()) == 4
+    assert len(client.get("/api/deployments", headers=H("head")).json()) == 5
 
 
 def test_engagement_manager_powers_are_scoped_to_own_engagements(client):
@@ -96,7 +96,7 @@ def test_custom_roles_and_permissions(client):
                     json={"name": "Ari Stone", "email": "ari@meridian.example", "role": "solutions_architect"})
     assert r.status_code == 201
     sa = {"Authorization": f"Bearer {r.json()['token']}"}
-    assert len(client.get("/api/deployments", headers=sa).json()) == 4
+    assert len(client.get("/api/deployments", headers=sa).json()) == 5
     me = client.get("/api/me", headers=sa).json()
     assert me["user"]["role_name"] == "Solutions Architect"
 
@@ -137,9 +137,9 @@ def test_white_label(client):
 
 def test_views_per_role(client):
     d = client.get("/api/dashboard", headers=H("customer")).json()
-    assert d["widgets"] == ["chain"] and "kpis" not in d and "team" not in d
+    assert d["widgets"] == ["clients", "my_tasks"] and "kpis" not in d and "team" not in d
     d = client.get("/api/dashboard", headers=H("head")).json()
-    assert {"kpis", "chain", "team", "findings"} <= set(d)
+    assert {"kpis", "chain", "findings"} <= set(d) and "capacity" in d["widgets"]
 
 
 def test_custom_stages_and_fields(client):

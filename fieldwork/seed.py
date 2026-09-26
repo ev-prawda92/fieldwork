@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import json
 import random
+from datetime import date, datetime, timedelta, timezone
 
-from . import audit, config, crypto, db
+from . import audit, config, crypto, db, ops
 from .engines import stages
 from .app import token_hash
 
@@ -247,9 +248,27 @@ NORTHFIELD_VALUE = json.dumps({
         {"event": "NetSuite sandbox refresh window", "days": 3, "cause": "third_party"},
     ]}, indent=2)
 
+def value_study_csv(seed: int = 11, effective: str = "2026-07-01", drop: float = 3.1,
+                    metric: str = "minutes per claim") -> str:
+    """Minutes per claim for adjusters who got the agent (treatment) and a comparison
+    group who didn't yet, three weeks either side of the day it went live."""
+    rnd = random.Random(seed)
+    lines = ["# effective: " + effective, "# metric: " + metric, "# unit: min",
+             "# volume_per_month: 9000", "arm,subject,day,value"]
+    eff = date.fromisoformat(effective)
+    for arm, n, change in (("treatment", 14, -drop), ("control", 12, -0.5)):
+        for i in range(1, n + 1):
+            base = 12 + rnd.gauss(0, 1.4)
+            for k in (-20, -13, -6, 6, 13, 20):
+                v = base + (change if k > 0 else 0) + rnd.gauss(0, 0.7)
+                lines.append(f"{arm},{arm[0]}{i:02d},{eff + timedelta(days=k)},{v:.2f}")
+    return "\n".join(lines)
+
+
 SAMPLE_INPUTS = {
     "census": REDLINE_CENSUS, "cortex": HARBORVIEW_AUTHORITY, "conformance": CASTELLAN_CONFORMANCE,
     "golive": CASTELLAN_ISSUES, "attribution": NORTHFIELD_VALUE, "readiness": READINESS_CHECKLIST,
+    "value_study": value_study_csv(),
 }
 
 
@@ -315,45 +334,70 @@ def seed(db_url) -> dict:
         ins("customers", id="cus_orb1", tenant_id="ten_orbital", name="Private Orbital Customer",
             industry="Aerospace", fields_json="{}", created_at=ts)
 
+        ins("customers", id="cus_keystone", tenant_id=T, name="Keystone Freight", industry="Logistics",
+            fields_json=json.dumps({"arr": 240000, "exec_sponsor": "COO, P. Brandt"}), created_at=ts)
+
+        # history: (stage, days ago it was entered), oldest first
         deps = [
-            ("dep_northfield", "cus_northfield", "AP exception agent", "adopt", "at_risk", "usr_marcus",
-             ["usr_marcus", "usr_maya", "usr_sam", "usr_rosa", "usr_ruth"],
-             {"target_golive": "2026-08-18", "tier": "Strategic"}, NORTHFIELD_STAFFING),
-            ("dep_harborview", "cus_harborview", "Prior-auth intake agent", "integrate", "on_track", "usr_marcus",
-             ["usr_marcus", "usr_jordan"], {"target_golive": "2026-11-30", "tier": "Strategic"}, HARBORVIEW_STAFFING),
-            ("dep_castellan", "cus_castellan", "Claims triage copilot", "golive", "blocked", "usr_lena",
-             ["usr_lena", "usr_sam", "usr_maya"], {"target_golive": "2026-10-20", "tier": "Standard"}, ""),
-            ("dep_redline", "cus_redline", "Carrier dispute pilot", "discover", "on_track", "usr_rosa",
-             ["usr_rosa", "usr_sam"], {"tier": "Pilot"}, ""),
+            ("dep_northfield", "cus_northfield", "AP exception agent", "at_risk", "usr_marcus",
+             {"usr_marcus": .1, "usr_maya": .5, "usr_sam": .5, "usr_rosa": .3, "usr_ruth": 0},
+             {"target_golive": D(-40), "tier": "Strategic"}, NORTHFIELD_STAFFING,
+             [("discover", 98), ("integrate", 86), ("test", 59), ("golive", 47), ("adopt", 38)],
+             (-98, 30, 1150)),
+            ("dep_harborview", "cus_harborview", "Prior-auth intake agent", "on_track", "usr_marcus",
+             {"usr_marcus": .1, "usr_jordan": .8}, {"target_golive": D(65), "tier": "Strategic"},
+             HARBORVIEW_STAFFING, [("discover", 27), ("integrate", 16)], (-27, 95, 260)),
+            ("dep_castellan", "cus_castellan", "Claims triage copilot", "blocked", "usr_lena",
+             {"usr_lena": .6, "usr_sam": .4, "usr_maya": .5}, {"target_golive": D(4), "tier": "Standard"}, "",
+             [("discover", 73), ("integrate", 60), ("test", 32), ("golive", 19)], (-73, 12, 700)),
+            ("dep_redline", "cus_redline", "Carrier dispute pilot", "on_track", "usr_rosa",
+             {"usr_rosa": .5, "usr_sam": .3}, {"tier": "Pilot"}, "", [("discover", 6)], (-6, 60, 300)),
+            ("dep_keystone", "cus_keystone", "Freight audit agent", "on_track", "usr_lena",
+             {"usr_lena": 0, "usr_marcus": 0}, {"tier": "Standard"}, "",
+             [("discover", 158), ("integrate", 145), ("test", 121), ("golive", 109), ("adopt", 101),
+              ("value", 72)], (-158, -20, 1000)),
         ]
-        for did, cid, name, stage, health, lead, members, fields, staffing in deps:
-            ins("deployments", id=did, tenant_id=T, customer_id=cid, name=name, stage=stage, health=health,
-                lead_id=lead, fields_json=json.dumps(fields), staffing_req=staffing, created_at=ts, updated_at=ts)
-            for m in members:
-                ins("deployment_members", deployment_id=did, user_id=m)
-            ins("stage_events", tenant_id=T, deployment_id=did, from_stage=None, to_stage=stage,
-                actor_id="usr_dana", note="imported", at=ts)
-            audit.record(conn, T, "usr_dana", "deployment.create", did, {"name": name, "stage": stage})
+        for did, cid, name, health, lead, members, fields, staffing, history, (s_on, e_on, budget) in deps:
+            opened = TS(history[0][1])
+            ins("deployments", id=did, tenant_id=T, customer_id=cid, name=name, stage=history[-1][0],
+                health=health, lead_id=lead, fields_json=json.dumps(fields), staffing_req=staffing,
+                created_at=opened, updated_at=TS(history[-1][1]), start_on=D(s_on), end_on=D(e_on),
+                budget_hours=budget)
+            for m, alloc in members.items():
+                ins("deployment_members", deployment_id=did, user_id=m, allocation=alloc)
+            prev = None
+            for stage, ago in history:
+                ins("stage_events", tenant_id=T, deployment_id=did, from_stage=prev, to_stage=stage,
+                    actor_id="usr_dana" if prev is None else lead, note="opened" if prev is None else "",
+                    at=TS(ago))
+                prev = stage
+            audit.record(conn, T, "usr_dana", "deployment.create", did, {"name": name, "stage": history[-1][0]})
         ins("deployments", id="dep_orb1", tenant_id="ten_orbital", customer_id="cus_orb1",
             name="Orbital secret project", stage="discover", health="on_track", lead_id="usr_orb",
             fields_json="{}", staffing_req="", created_at=ts, updated_at=ts)
 
         tasks = [
-            ("dep_northfield", "adopt", "Run build-vs-training on invoice exception times", "usr_maya", "in_progress", "2026-09-29", "internal"),
-            ("dep_northfield", "adopt", "Walk Harrisburg AP lead through exception queue", "usr_rosa", "open", "2026-10-01", "shared"),
-            ("dep_northfield", "adopt", "Confirm 3-way-match tolerance config with customer IT", "usr_sam", "blocked", "2026-09-26", "internal"),
-            ("dep_northfield", "adopt", "Monthly value readout with CFO", "usr_marcus", "open", "2026-10-08", "shared"),
-            ("dep_northfield", "adopt", "Send September AP exception export", "usr_ruth", "open", "2026-09-30", "shared"),
-            ("dep_harborview", "integrate", "Scope FHIR read permissions for intake agent", "usr_jordan", "in_progress", "2026-10-03", "internal"),
-            ("dep_harborview", "integrate", "Human approval gate on payer submissions", "usr_jordan", "open", "2026-10-10", "internal"),
-            ("dep_castellan", "golive", "Close security review of model gateway", "usr_lena", "blocked", "2026-09-24", "internal"),
-            ("dep_castellan", "golive", "Book exec go/no-go", "usr_maya", "open", "2026-10-02", "internal"),
-            ("dep_redline", "discover", "Systems inventory with Redline ops", "usr_rosa", "open", "2026-10-06", "internal"),
+            ("dep_northfield", "adopt", "Run build-vs-training on invoice exception times", "usr_maya", "in_progress", 3, "internal"),
+            ("dep_northfield", "adopt", "Walk Harrisburg AP lead through exception queue", "usr_rosa", "open", 5, "shared"),
+            ("dep_northfield", "adopt", "Confirm 3-way-match tolerance config with customer IT", "usr_sam", "blocked", 0, "internal"),
+            ("dep_northfield", "adopt", "Monthly value readout with CFO", "usr_marcus", "open", 12, "shared"),
+            ("dep_northfield", "adopt", "Send September AP exception export", "usr_ruth", "open", 4, "shared"),
+            ("dep_harborview", "integrate", "Scope FHIR read permissions for intake agent", "usr_jordan", "in_progress", 7, "internal"),
+            ("dep_harborview", "integrate", "Human approval gate on payer submissions", "usr_jordan", "open", 14, "internal"),
+            ("dep_castellan", "golive", "Close security review of model gateway", "usr_lena", "blocked", -2, "internal"),
+            ("dep_castellan", "golive", "Book exec go/no-go", "usr_maya", "open", 6, "internal"),
+            ("dep_redline", "discover", "Systems inventory with Redline ops", "usr_rosa", "open", 10, "internal"),
+            ("dep_harborview", "integrate", "Draft payer test matrix", None, "open", 9, "internal"),
+            ("dep_castellan", "golive", "Hypercare rota for week two", None, "open", 8, "internal"),
+            ("dep_castellan", "golive", "Fix fraud-flag miss on F-03 and rerun conformance", "usr_sam", "in_progress", 2, "internal"),
         ]
+        blocked_since = {"tsk_003": 5, "tsk_008": 12}
         for i, (did, stage, title, who, status, due, vis) in enumerate(tasks, 1):
             tid = f"tsk_{i:03d}"
+            made = TS(blocked_since.get(tid, 0) + 3)
             ins("tasks", id=tid, tenant_id=T, deployment_id=did, stage=stage, title=title, assignee_id=who,
-                status=status, due=due, created_by="usr_marcus", created_at=ts, updated_at=ts, visibility=vis)
+                status=status, due=D(due), created_by="usr_marcus", created_at=made,
+                updated_at=TS(blocked_since[tid]) if tid in blocked_since else made, visibility=vis)
             audit.record(conn, T, "usr_marcus", "task.create", tid,
                          {"deployment": did, "assignee": who, "title": title, "visibility": vis})
 
@@ -379,4 +423,175 @@ def seed(db_url) -> dict:
                      {"engine": "attribution", "deployment": "dep_northfield"})
         audit.record(conn, T, "usr_marcus", "finding.share", "fnd_value1",
                      {"visibility": "shared", "deployment": "dep_northfield"})
+        seed_operations(conn, T, ts)
+    ops.sweep(conn, T)
     return DEMO_TOKENS
+
+
+def D(days: int) -> str:
+    """A date relative to today, so the demo never goes stale."""
+    return (datetime.now(timezone.utc).date() + timedelta(days=days)).isoformat()
+
+
+def TS(days_ago: float) -> str:
+    return ops.iso(datetime.now(timezone.utc) - timedelta(days=days_ago))
+
+
+def seed_operations(conn, T: str, ts: str) -> None:
+    """Hours, time sheets, pipeline, delay history, flags, approvals, checklist, value study."""
+    def ins(table: str, **cols):
+        conn.execute(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                     tuple(cols.values()))
+    rnd = random.Random(42)
+    conn.execute("UPDATE users SET weekly_hours=0 WHERE id IN ('usr_dana', 'usr_ruth')")
+
+    # Time sheets: weekly totals for past weeks, day by day this week.
+    today = datetime.now(timezone.utc).date()
+    this_week = ops.week_start(today)
+    members = conn.execute("SELECT m.deployment_id, m.user_id, m.allocation, d.start_on, d.end_on"
+                           " FROM deployment_members m JOIN deployments d ON d.id=m.deployment_id"
+                           " WHERE d.tenant_id=?", (T,)).fetchall()
+    hist_alloc = {("dep_keystone", "usr_lena"): .6, ("dep_keystone", "usr_marcus"): .1}
+    for m in members:
+        alloc = m["allocation"] or hist_alloc.get((m["deployment_id"], m["user_id"]), 0)
+        if not alloc:
+            continue
+        start, end = date.fromisoformat(m["start_on"]), min(date.fromisoformat(m["end_on"]), today)
+        ws = ops.week_start(start)
+        while ws < this_week and ws <= end:
+            ins("time_entries", tenant_id=T, user_id=m["user_id"], deployment_id=m["deployment_id"],
+                day=(ws + timedelta(days=2)).isoformat(), hours=round(alloc * 40 * rnd.uniform(.82, 1.08), 1),
+                source="import", created_at=ts)
+            ws += timedelta(weeks=1)
+        day = this_week
+        while day < today and day.weekday() < 5 and day <= end:
+            ins("time_entries", tenant_id=T, user_id=m["user_id"], deployment_id=m["deployment_id"],
+                day=day.isoformat(), hours=round(alloc * 8 * rnd.uniform(.8, 1.15), 1), source="console",
+                created_at=ts)
+            day += timedelta(days=1)
+    # Harborview spent ahead of plan (the discovery ran long, off-contract)
+    ins("time_entries", tenant_id=T, user_id="usr_jordan", deployment_id="dep_harborview", day=D(-30),
+        hours=24, source="import", created_at=ts)
+
+    # Pipeline from the CRM
+    opps = [
+        ("Northfield · Order-to-cash agent", "Northfield Supply Co.", "Order-to-cash exceptions", 280000, .6, "commit", 21, 40),
+        ("Cobalt Energy · Field ticket agent", "Cobalt Energy", "Field ticket reconciliation", 240000, .5, "commit", 21, 90),
+        ("Harborview · Denials appeal agent", "Harborview Health", "Claim denial appeals", 350000, .35, "proposal", 45, 60),
+        ("Pinecrest Bank · KYC review copilot", "Pinecrest Bank", "KYC file review", 520000, .2, "qualified", 70, 80),
+        ("Atlas Freight · Carrier onboarding agent", "Atlas Freight", "Carrier onboarding", 180000, .1, "lead", 90, 30),
+        ("Keystone Freight · Freight audit agent", "Keystone Freight", "Freight audit", 240000, 1, "won", -170, 30),
+        ("Vireo Retail · Returns agent", "Vireo Retail", "Returns triage", 150000, 0, "lost", None, 30),
+    ]
+    for i, (name, cust, uc, val, p, st, start, hrs) in enumerate(opps, 1):
+        ins("opportunities", id=f"opp_{i:02d}", tenant_id=T, name=name, customer=cust, use_case=uc, value=val,
+            probability=p, stage=st, expected_start=D(start) if start is not None else None, weekly_hours=hrs,
+            source="import", external_id=f"crm-{1000 + i}", updated_at=ts)
+
+    # Delay history. Keystone's closed deployment taught the workspace that "blocked"
+    # tasks here usually sit with the customer, so new ones are proposed that way.
+    def span(sid, dep, stage, signal, started, days, proposed, reason, confirmed=None, by="usr_marcus",
+             weight=1.0, status=None):
+        ins("delays", id=sid, tenant_id=T, deployment_id=dep, stage=stage, signal=signal, started_at=TS(started),
+            ended_at=TS(started - days) if days is not None else None, proposed_owner=proposed,
+            proposed_reason=reason, proposal_basis=f"default for {signal.replace('_', ' ')}", evidence="",
+            dedupe_key=sid, status=status or ("open" if confirmed is None else
+                                              ("confirmed" if confirmed == proposed else "reassigned")),
+            confirmed_owner=confirmed, confirmed_reason=reason if confirmed else None,
+            confirmed_by=by if confirmed else None, confirmed_at=TS(started - (days or 0)) if confirmed else None,
+            weight=weight if confirmed else 0, created_at=TS(started))
+    ks = [("integrate", 142, 5, "customer", "Waiting on customer VPN access"),
+          ("integrate", 134, 3, "customer", "Customer API keys not issued"),
+          ("test", 119, 4, "customer", "Customer test data extract late"),
+          ("test", 113, 2, "team", "Our fixture loader broke"),
+          ("golive", 108, 3, "customer", "Customer change freeze"),
+          ("adopt", 99, 2, "team", "Training deck rework"),
+          ("adopt", 92, 4, "customer", "Supervisors unavailable for training")]
+    for i, (stage, ago, days, owner, why) in enumerate(ks, 1):
+        span(f"dly_ks{i}", "dep_keystone", stage, "task_blocked", ago, days, "team", why, confirmed=owner,
+             by="usr_lena")
+    span("dly_ks8", "dep_keystone", "integrate", "security_review", 144, 9, "customer",
+         "Customer security review", confirmed="customer", by="usr_lena")
+    span("dly_ks9", "dep_keystone", "golive", "model_access", 107, 3, "model_vendor",
+         "Model access or rate limits", confirmed="model_vendor", by="rule", weight=0, status="deduced")
+    span("dly_nf1", "dep_northfield", "integrate", "security_review", 82, 9, "customer",
+         "Customer security review of the model gateway", confirmed="customer")
+    span("dly_nf2", "dep_northfield", "integrate", "manual", 70, 4, "team", "NetSuite connector rework",
+         confirmed="team")
+    span("dly_nf3", "dep_northfield", "test", "vendor_error", 55, 3, "software_vendor",
+         "NetSuite sandbox refresh window", confirmed="software_vendor")
+    span("dly_ca1", "dep_castellan", "test", "change_board", 30, 6, "customer", "Customer change board",
+         confirmed="customer", by="usr_lena")
+    span("dly_ca2", "dep_castellan", "test", "task_blocked", 25, 5, "team", "Fraud model threshold rework",
+         confirmed="team", by="usr_lena")
+
+    tenant = conn.execute("SELECT * FROM tenants WHERE id=?", (T,)).fetchone()
+    cfg = config.upgrade(json.loads(tenant["config_json"]))
+    deps = {r["id"]: r for r in conn.execute("SELECT * FROM deployments WHERE tenant_id=?", (T,))}
+    for tid, ago in (("tsk_003", 5), ("tsk_008", 12)):
+        t = conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+        ops.open_span(conn, T, deps[t["deployment_id"]], signal="task_blocked", dedupe_key=f"task:{tid}",
+                      evidence=f"“{t['title']}” marked blocked", started_at=datetime.now(timezone.utc) - timedelta(days=ago),
+                      tenant_name=tenant["name"], stage=t["stage"])
+    ops.open_span(conn, T, deps["dep_harborview"], signal="waiting_on_customer", dedupe_key="manual_hv1",
+                  evidence="Asked Harborview IT for payer sandbox credentials; no answer yet",
+                  started_at=datetime.now(timezone.utc) - timedelta(days=4), tenant_name=tenant["name"],
+                  reason="Payer sandbox credentials from Harborview IT")
+    ops.open_span(conn, T, deps["dep_castellan"], signal="model_access", dedupe_key="manual_ca_rl",
+                  evidence="Model provider returned 429s during the go-live load test",
+                  started_at=datetime.now(timezone.utc) - timedelta(days=3), tenant_name=tenant["name"])
+
+    # Flags raised by people (the sweep adds the rule flags)
+    ins("flags", id="flg_ca_sponsor", tenant_id=T, deployment_id="dep_castellan", severity="high",
+        text="Exec sponsor hasn't confirmed the go/no-go; go-live date at risk", rule_key=None,
+        raised_by="usr_lena", status="open", created_at=TS(2))
+    ins("flags", id="flg_nf_site", tenant_id=T, deployment_id="dep_northfield", severity="med",
+        text="Harrisburg adoption trailing the other two sites", rule_key=None, raised_by="usr_rosa",
+        status="returned", handled_by="usr_dana", handled_at=TS(1),
+        note="Plan a site visit with the Harrisburg AP lead before the CFO readout", created_at=TS(4))
+
+    # Agent actions waiting for a person
+    ins("approvals", id="apr_hv1", tenant_id=T, deployment_id="dep_harborview", agent="Intake agent",
+        request="Write intake notes to the Epic sandbox", detail="42 notes from the prior-auth test set, sandbox only",
+        requested_by="usr_jordan", status="pending", created_at=TS(.3))
+    ins("approvals", id="apr_ca1", tenant_id=T, deployment_id="dep_castellan", agent="Claims triage agent",
+        request="Re-route 214 misrouted claims in production",
+        detail="Claims opened since the routing fix; each move is logged with the old and new queue",
+        requested_by="usr_lena", status="pending", created_at=TS(.8))
+    ins("approvals", id="apr_nf1", tenant_id=T, deployment_id="dep_northfield", agent="AP exception agent",
+        request="Auto-close duplicate exceptions under $50", detail="", requested_by="usr_maya",
+        status="approved", decided_by="usr_marcus", decided_at=TS(6), created_at=TS(7))
+
+    # Go-live checklist on Castellan
+    for i, label in enumerate(ops.CHECKLIST_DEFAULT, 1):
+        done = i in (1, 3, 6)
+        ins("checklist_items", id=f"chk_ca{i}", tenant_id=T, deployment_id="dep_castellan", label=label,
+            position=i, done=1 if done else 0, done_by="usr_lena" if done else None,
+            done_at=TS(3) if done else None, created_at=TS(19))
+
+    # A failing conformance run on Castellan and a confirmed value study on Keystone
+    conf = stages.conformance(CASTELLAN_CONFORMANCE)
+    ins("findings", id="fnd_conf1", tenant_id=T, deployment_id="dep_castellan", engine="conformance",
+        title="Conformance · claims routing suite", result_json=json.dumps(conf), confirmed_by="usr_lena",
+        confirmed_at=TS(20), created_by="usr_sam", created_at=TS(21), visibility="internal")
+    vs = stages.value_study(value_study_csv(effective=D(-50), metric="minutes per freight audit"))
+    ins("findings", id="fnd_vs1", tenant_id=T, deployment_id="dep_keystone", engine="value_study",
+        title="Value study · minutes per freight audit", result_json=json.dumps(vs), confirmed_by="usr_marcus",
+        confirmed_at=TS(10), created_by="usr_lena", created_at=TS(12), visibility="internal")
+
+    # One result on each stage page so none of them opens empty
+    from .engines import run_sendero, parse_csv
+    more = [
+        ("fnd_census1", "dep_redline", "census", "Systems census · Redline", stages.census(REDLINE_CENSUS),
+         "usr_rosa", 2, "usr_marcus", 1),
+        ("fnd_cortex1", "dep_harborview", "cortex", "Authority check · intake agent", stages.authority(HARBORVIEW_AUTHORITY),
+         "usr_jordan", 1, None, None),
+        ("fnd_sendero1", "dep_northfield", "sendero", "Invoice exception handling time",
+         run_sendero(parse_csv(northfield_adoption_csv()), "minutes_per_exception", 6), "usr_maya", 6, "usr_marcus", 5),
+        ("fnd_golive1", "dep_castellan", "golive", "Command center · launch week", stages.command_center(CASTELLAN_ISSUES),
+         "usr_sam", 3, None, None),
+    ]
+    for fid, dep, eng, title, res, by, ago, conf, conf_ago in more:
+        ins("findings", id=fid, tenant_id=T, deployment_id=dep, engine=eng, title=title, result_json=json.dumps(res),
+            confirmed_by=conf, confirmed_at=TS(conf_ago) if conf else None, created_by=by, created_at=TS(ago),
+            visibility="internal")

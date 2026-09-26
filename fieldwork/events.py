@@ -117,6 +117,9 @@ def slack_text(event: str, d: dict) -> str:
         "deployment.advanced": f":arrow_right: {link} moved to *{d.get('to_name')}* ({who})",
         "deployment.health": f":warning: {link} is now *{str(d.get('health', '')).replace('_', ' ')}* ({who})",
         "report.created": f":memo: {who} drafted a {d.get('audience')} status report for {link}",
+        "flag.raised": f":triangular_flag_on_post: *{str(d.get('severity', '')).upper()}* flag on {link}: {d.get('text')} ({who})",
+        "delay.opened": f":hourglass_flowing_sand: Delay on {link}: {d.get('reason')}. Proposed owner *{d.get('owner')}*; confirm or reassign it in the console.",
+        "approval.requested": f":raised_hand: *{d.get('agent')}* is asking to {d.get('request')} on {link} ({who}); approve or reject in the console.",
         "digest": d.get("text", ""),
     }[event]
 

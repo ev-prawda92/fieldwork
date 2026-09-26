@@ -38,12 +38,21 @@ Hosted demos serve that engine themselves.
 **Deploy:** see [LAUNCH.md](LAUNCH.md): one-click Render blueprint (`render.yaml`), or `docker compose up` for Postgres locally.
 
 ```
-python -m pytest -q                                              # 69 tests on SQLite (130 with Postgres too)
+python -m pytest -q                                              # 103 tests on SQLite (197 with Postgres too)
 FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # plus the same tests on Postgres
 ```
 
 ## What people use every day
 
+- **A home for each role.** Engineers see their deployments as cards, their tasks, what's blocked on the customer and their hours this week. Managers see capacity, unassigned work, flags and approvals. Directors see projects, the pipeline and the portfolio. Customers see only what's shared with them. Each workspace picks the sections per role. Light and dark mode.
+- **Chains.** Every deployment on one screen: the stage chain, days in stage against the stage's target, and who the current delay belongs to.
+- **Delay ledger.** A blocked task, a blocked tracker issue or a stage past its target opens a delay with a *proposed* owner: the customer, your team, the model vendor or a software vendor. A person confirms or reassigns it. Batch decisions count a quarter as much as one-at-a-time ones, and delays provable from the signal (a model provider rate-limiting you) settle by rule with no weight. Once a signal has enough confirmations, the proposal learns your workspace's pattern and says why.
+- **Flags.** Rules raise them on their own (stage past target, hours burning ahead of the calendar, a failed conformance gate, a task blocked more than 3 days) and clear them when the condition clears. People raise their own. A director can take one or hand it back to the team lead with a note.
+- **Capacity.** Weekly hours, allocations per deployment, logged time (entered or imported), roll-offs and unassigned work.
+- **Pipeline.** Deals from a CRM export, each with a staffing check: does the team have the weekly hours free for its first four weeks? Deals that fit alone but not together are called out.
+- **Portfolio.** Contract value in flight, median days to go-live against your targets, median days per stage, utilization, and who owns the delay.
+- **Agent approvals.** An agent asks before acting on a customer system; someone other than the requester approves or holds it.
+- **Go-live checklist** on each deployment.
 - **Today.** Blocked work, what's due, findings waiting for your confirmation, and deployments that moved or need attention.
 - **Status reports, drafted for you.** Internal and customer versions, built only from the record: tasks, stage moves and confirmed findings. Share the customer version with one click, or copy it into an email.
 - **Slack.** Alerts when work is blocked, assigned or waiting for confirmation, plus a weekday digest.
@@ -72,6 +81,7 @@ Stages: Discover → Integrate → Test → Go-live → Adopt → Value. Every r
 | Test | **Conformance** | Pass rate by category against a bar; any critical miss fails the stage. |
 | Go-live | **Command center** | Whether it's safe to stand down: no open sev1, sev2 under a limit, new issues trending down. |
 | Adopt | **Sendero** | Whether friction is a BUILD or TRAINING problem (two-level outlier test). |
+| Value | **Value study** | Difference in differences against a comparison group, with a permutation test. Refuses to call it below 8 people per group. |
 | Value | **Value attribution** | Value against baseline, and every day of delay attributed to customer, vendor or third party. |
 | any | **Threshold** (bench) | Who can staff the deployment, gate by gate, with citations. |
 
@@ -93,6 +103,7 @@ A stage can carry up to four engines. Teams plug in their own as signed webhooks
 ```
 fieldwork/app.py         core API: sign-in, tenancy, permissions, deployments, tasks, sharing, engines, audit
 fieldwork/launch.py      Today, reports, integrations, import, personal tokens, operator metrics, access gate
+fieldwork/ops.py         delay ledger, flags and the sweep, capacity, pipeline, portfolio, approvals, checklist
 fieldwork/mcp.py         MCP server (/mcp) and stdio bridge
 fieldwork/events.py      events, outbox worker, Slack, webhooks, digest
 fieldwork/trackers.py    GitHub, Linear, Jira two-way sync
@@ -114,4 +125,5 @@ examples/engines/        a webhook engine and a push engine to copy from
 - Slack slash commands and direct messages (today: channel alerts and the digest).
 - Assignee sync with trackers (status and title sync both ways today).
 - AI drafting with each team's own model. Reports are deterministic today.
+- Native Harvest, Toggl, Salesforce and HubSpot sync (CSV import today), calendar time off, and email silence as a delay signal.
 - A connection pool, and IP pinning for outbound calls.

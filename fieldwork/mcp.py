@@ -62,6 +62,23 @@ TOOLS = [
      "moves and confirmed findings. audience: internal or customer.",
      "inputSchema": _s(deployment_id={"type": "string"},
                        audience={"type": "string", "enum": ["internal", "customer"], "optional": True})},
+    {"name": "request_approval", "description": "Ask a person to approve an action before you take it (for example "
+     "writing to a customer system). Someone other than you decides; poll check_approval for the answer and don't "
+     "act until it says approved.",
+     "inputSchema": _s(deployment_id={"type": "string"}, agent={"type": "string", "description": "your name"},
+                       request={"type": "string", "description": "the action, in a short phrase"},
+                       detail={"type": "string", "optional": True})},
+    {"name": "check_approval", "description": "Whether an approval you asked for was approved, rejected or is pending.",
+     "inputSchema": _s(approval_id={"type": "string"})},
+    {"name": "log_delay", "description": "Record that a deployment is waiting on something (security review, change "
+     "board, a customer answer, model access, a vendor). A person confirms who owns it.",
+     "inputSchema": _s(deployment_id={"type": "string"},
+                       signal={"type": "string", "enum": ["manual", "waiting_on_customer", "security_review",
+                                                          "change_board", "model_access", "vendor_error"]},
+                       reason={"type": "string", "optional": True},
+                       evidence={"type": "string", "optional": True})},
+    {"name": "portfolio", "description": "Every deployment I can see on the chain: stage, days in stage against "
+     "target, who owns the current delay, burn, flags, and headline numbers.", "inputSchema": _s()},
 ]
 
 
@@ -93,6 +110,16 @@ def _route(name: str, a: dict) -> tuple[str, str, dict | None]:
         return "GET", f"/api/deployments/{dep}/findings", None
     if name == "draft_status_report":
         return "POST", f"/api/deployments/{dep}/reports", {"audience": a.get("audience", "internal")}
+    if name == "request_approval":
+        return "POST", f"/api/deployments/{dep}/approvals", {"agent": a["agent"], "request": a["request"],
+                                                              "detail": a.get("detail", "")}
+    if name == "check_approval":
+        return "GET", f"/api/approvals/{a['approval_id']}", None
+    if name == "log_delay":
+        return "POST", f"/api/deployments/{dep}/delays", {"signal": a["signal"], "reason": a.get("reason", ""),
+                                                           "evidence": a.get("evidence", "")}
+    if name == "portfolio":
+        return "GET", "/api/portfolio", None
     raise KeyError(name)
 
 
@@ -145,7 +172,7 @@ def register(app) -> None:
             who = me.json()
             return JSONResponse({"jsonrpc": "2.0", "id": mid, "result": {
                 "protocolVersion": ver, "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "fieldwork", "title": who["branding"]["product_name"], "version": "0.4.0"},
+                "serverInfo": {"name": "fieldwork", "title": who["branding"]["product_name"], "version": "0.5.0"},
                 "instructions": (f"You are working in {who['tenant']['name']}'s deployment workspace as "
                                  f"{who['user']['name']} ({who['user']['role_name']}). Engine results are saved as "
                                  "findings that another person must confirm; say so rather than presenting them as final.")}})

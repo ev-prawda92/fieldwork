@@ -24,7 +24,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from . import audit, config, crypto, db, engines, events, plugins, sso, trackers
+from . import audit, config, crypto, db, engines, events, ops, plugins, sso, trackers
 from .engines import stages
 
 FRONTEND = Path(__file__).resolve().parent / "static"
@@ -127,7 +127,7 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
     """background=True (used by `serve`) starts the outbox worker and, in demo mode, the demo reset."""
     conn = db.connect(db_url)
     db.init(conn)
-    app = FastAPI(title="Fieldwork", version="0.4.0",
+    app = FastAPI(title="Fieldwork", version="0.5.0",
                   description="The platform deployment teams build their methodology on")
     app.state.conn = conn
 
@@ -412,7 +412,7 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
     def people(c: Ctx = Depends(ctx)):
         c.require("people.read")
         rows = conn.execute(
-            """SELECT u.id, u.name, u.email, u.role,
+            """SELECT u.id, u.name, u.email, u.role, u.weekly_hours,
                       (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id=u.id AND t.status!='done') open_tasks,
                       (SELECT COUNT(*) FROM deployment_members m WHERE m.user_id=u.id) deployments
                FROM users u WHERE u.tenant_id=? ORDER BY u.name""", (c.tenant_id,)).fetchall()
@@ -444,7 +444,8 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
         return {"id": uid, "token": tok, "note": note}
 
     class PersonPatch(BaseModel):
-        role: str
+        role: str | None = None
+        weekly_hours: float | None = Field(default=None, ge=0, le=80)
 
     @app.patch("/api/people/{user_id}")
     def change_role(user_id: str, body: PersonPatch, c: Ctx = Depends(ctx)):
@@ -452,6 +453,14 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
         u = conn.execute("SELECT * FROM users WHERE id=? AND tenant_id=?", (user_id, c.tenant_id)).fetchone()
         if not u:
             raise HTTPException(404, "person not found")
+        if body.role is not None and body.role not in {r["key"] for r in c.cfg["roles"]}:
+            raise HTTPException(422, f"unknown role {body.role!r}")
+        if body.weekly_hours is not None:
+            with db.tx(conn):
+                conn.execute("UPDATE users SET weekly_hours=? WHERE id=?", (body.weekly_hours, user_id))
+                c.log("people.hours", user_id, {"weekly_hours": body.weekly_hours})
+        if body.role is None:
+            return {"ok": True}
         if body.role not in {r["key"] for r in c.cfg["roles"]}:
             raise HTTPException(422, f"unknown role {body.role!r}")
         if user_id == c.uid and c.cfg["permissions"]["config.edit"].get(body.role) != "all":
@@ -495,7 +504,7 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
 
     def dep_out(r, c: Ctx) -> dict:
         members = conn.execute(
-            "SELECT u.id, u.name, u.role FROM deployment_members m JOIN users u ON u.id=m.user_id"
+            "SELECT u.id, u.name, u.role, m.allocation FROM deployment_members m JOIN users u ON u.id=m.user_id"
             " WHERE m.deployment_id=? ORDER BY u.name", (r["id"],)).fetchall()
         cust = conn.execute("SELECT name FROM customers WHERE id=?", (r["customer_id"],)).fetchone()
         vis = "" if c.can_on("task.view_internal", r["id"]) else " AND visibility='shared'"
@@ -508,6 +517,8 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
             "staffing_req": r["staffing_req"] if c.can_on("bench.match", r["id"]) else "",
             "members": [dict(m) for m in members],
             "tasks": {x["status"]: x["n"] for x in counts},
+            "start_on": r["start_on"], "end_on": r["end_on"],
+            "budget_hours": r["budget_hours"] if c.can_on("task.view_internal", r["id"]) else None,
             "updated_at": r["updated_at"],
         }
 
@@ -602,6 +613,7 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
             conn.execute("UPDATE deployments SET stage=?, updated_at=? WHERE id=?", (body.to_stage, ts, dep_id))
             add_stage_event(c, dep_id, r["stage"], body.to_stage, body.note, ts)
             c.log("deployment.advance", dep_id, {"from": r["stage"], "to": body.to_stage, "note": body.note})
+            ops.on_advance(conn, c.tenant_id, dep_id, r["stage"])
             emit(c, "deployment.advanced", dep_id, to=body.to_stage,
                  to_name=next(x["name"] for x in c.cfg["stages"] if x["key"] == body.to_stage))
         return {"stage": body.to_stage}
@@ -610,6 +622,9 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
         health: str | None = None
         fields: dict | None = None
         staffing_req: str | None = None
+        start_on: str | None = None
+        end_on: str | None = None
+        budget_hours: float | None = Field(default=None, ge=0, le=1_000_000)
 
     @app.patch("/api/deployments/{dep_id}")
     def patch_deployment(dep_id: str, body: PatchDeployment, c: Ctx = Depends(ctx)):
@@ -627,6 +642,20 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
         if body.staffing_req is not None:
             c.require_on("deployment.staff", dep_id)
             changes["staffing_req"] = body.staffing_req[:8000]
+        for k in ("start_on", "end_on"):
+            v = getattr(body, k)
+            if v is not None:
+                c.require_on("deployment.staff", dep_id)
+                if v and not ops.parse_day(v):
+                    raise HTTPException(422, f"{k} must be YYYY-MM-DD")
+                changes[k] = v[:10] or None
+        if body.budget_hours is not None:
+            c.require_on("deployment.staff", dep_id)
+            changes["budget_hours"] = body.budget_hours or None
+        s_on = changes.get("start_on", r["start_on"])
+        e_on = changes.get("end_on", r["end_on"])
+        if s_on and e_on and e_on < s_on:
+            raise HTTPException(422, "end_on is before start_on")
         if not changes:
             return {"changed": []}
         changes["updated_at"] = audit.now()
@@ -716,6 +745,7 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
         assignee_id: str | None = None
         due: str | None = None
         visibility: str = "internal"
+        unassigned: bool = False
 
     @app.post("/api/tasks", status_code=201)
     def add_task(body: TaskIn, c: Ctx = Depends(ctx)):
@@ -723,12 +753,16 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
         c.require_on("task.create", body.deployment_id)
         if body.visibility not in VISIBILITY:
             raise HTTPException(422, "visibility must be internal or shared")
-        assignee = body.assignee_id or c.uid
-        if assignee != c.uid:
+        if body.unassigned:
             c.require_on("task.assign", body.deployment_id)
-        a = tenant_user(c, assignee)
+            assignee, a = None, None
+        else:
+            assignee = body.assignee_id or c.uid
+            if assignee != c.uid:
+                c.require_on("task.assign", body.deployment_id)
+            a = tenant_user(c, assignee)
         visibility = body.visibility
-        if not sees_internal_tasks(c, a["role"], body.deployment_id, assignee):
+        if a and not sees_internal_tasks(c, a["role"], body.deployment_id, assignee):
             visibility = "shared"  # a task for the customer has to be one they can see
         if visibility == "shared":
             c.require_on("customer.share", body.deployment_id)
@@ -744,7 +778,7 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
                           "open", body.due, c.uid, ts, ts, visibility))
             c.log("task.create", tid, {"deployment": body.deployment_id, "assignee": assignee,
                                        "title": body.title, "visibility": visibility})
-            if assignee != c.uid:
+            if a and assignee != c.uid:
                 emit(c, "task.assigned", body.deployment_id, title=body.title, assignee=a["name"])
             trackers.queue_push(conn, c.tenant_id, c.cfg, dep, tid)
         return {"id": tid, "visibility": visibility}
@@ -794,6 +828,10 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
             conn.execute(f"UPDATE tasks SET {', '.join(k + '=?' for k in changes)} WHERE id=?",
                          (*changes.values(), task_id))
             c.log("task.update", task_id, {k: v for k, v in changes.items() if k != "updated_at"})
+            if "status" in changes:
+                ops.on_task_status(conn, c.tenant_id, c.tenant_name, c.cfg,
+                                   {**dict(t), "assignee_id": changes.get("assignee_id", t["assignee_id"])},
+                                   changes["status"])
             title = t["title"]
             assignee_name = uname(changes.get("assignee_id", t["assignee_id"]))
             if changes.get("status") == "blocked" and t["status"] != "blocked":
@@ -1093,12 +1131,15 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
     deps = SimpleNamespace(conn=conn, ctx=ctx, Ctx=Ctx, emit=emit, dep_out=dep_out,
                            visible_deployments=visible_deployments, tasks=tasks)
     launch.register(app, deps)
+    ops.register(app, deps)
     mcp.register(app)
 
     if background:
         @app.on_event("startup")
         def _start_background():
             app.state.worker_stop = events.start_worker(conn)
+            ops.start_sweeper(conn, app.state.worker_stop,
+                              float(os.environ.get("FIELDWORK_SWEEP_MINUTES", "30") or 30))
             minutes = float(os.environ.get("FIELDWORK_DEMO_RESET_MINUTES", "0") or 0)
             if demo_on() and minutes > 0:
                 import threading

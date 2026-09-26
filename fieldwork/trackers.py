@@ -298,6 +298,10 @@ def apply_inbound(conn, tenant_id: str, provider: str, changes: list[tuple[str, 
                          (_now(), task["id"], provider))
             audit.record(conn, tenant_id, f"tracker:{provider}", "task.update", task["id"],
                          {k: v for k, v in upd.items() if k != "updated_at"} | {"origin": provider})
+            if "status" in upd:
+                from . import ops
+                t = conn.execute("SELECT name FROM tenants WHERE id=?", (tenant_id,)).fetchone()
+                ops.on_task_status(conn, tenant_id, t["name"], cfg, task, upd["status"], origin=provider)
             dep = conn.execute("SELECT name FROM deployments WHERE id=?", (task["deployment_id"],)).fetchone()
             base = {"deployment_id": task["deployment_id"], "deployment": dep["name"], "title": upd.get("title", task["title"]),
                     "actor": provider.title()}

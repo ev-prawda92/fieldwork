@@ -5,6 +5,7 @@
   fieldwork serve                      run the API and console (plus the outbox worker)
   fieldwork worker                     run only the outbox worker (Slack, webhooks, tracker sync)
   fieldwork digest                     queue today's Slack digest for every workspace
+  fieldwork sweep                      run the flag rules and open overdue-stage delays (serve also does this every 30 min)
   fieldwork mcp --url U --token T      MCP stdio bridge for AI tools that launch local servers
   fieldwork seed | migrate | rotate-keys
 
@@ -31,7 +32,8 @@ def main() -> None:
                            ("migrate", "apply pending database migrations"),
                            ("rotate-keys", "re-encrypt stored secrets under the newest key"),
                            ("worker", "deliver queued notifications and tracker sync"),
-                           ("digest", "queue the daily Slack digest")):
+                           ("digest", "queue the daily Slack digest"),
+                           ("sweep", "run the flag rules across every workspace")):
         p = sub.add_parser(name, help=helptext)
         p.add_argument("--db", default=None)
     sub.choices["seed"].add_argument("--if-empty", action="store_true",
@@ -99,6 +101,15 @@ def main() -> None:
         conn = db.connect(url)
         db.init(conn)
         print(f"queued {events.queue_digests(conn)} digest(s); delivered {events.process(conn)}")
+    elif args.cmd == "sweep":
+        from . import events, ops
+        conn = db.connect(url)
+        db.init(conn)
+        for tid, r in ops.sweep_all(conn).items():
+            print(f"{tid}: {r['deployments']} deployments · {r['flags_raised']} flags raised · "
+                  f"{r['flags_resolved']} resolved · {r['delays_opened']} delays opened")
+        sent = events.process(conn)
+        print(f"notifications: {sent['sent']} sent, {sent['failed']} failed")
     elif args.cmd == "worker":
         import time
         from . import events

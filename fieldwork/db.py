@@ -209,6 +209,102 @@ CREATE TABLE IF NOT EXISTS personal_tokens (
 );
 ALTER TABLE deployments ADD COLUMN sync_json TEXT NOT NULL DEFAULT '{}'
 """),
+    (5, "delivery operations: delay ledger, capacity, pipeline, flags, approvals, checklist", """
+ALTER TABLE users ADD COLUMN weekly_hours REAL NOT NULL DEFAULT 40;
+ALTER TABLE deployments ADD COLUMN start_on TEXT;
+ALTER TABLE deployments ADD COLUMN end_on TEXT;
+ALTER TABLE deployments ADD COLUMN budget_hours REAL;
+ALTER TABLE deployment_members ADD COLUMN allocation REAL NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS delays (
+    id              TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL,
+    deployment_id   TEXT NOT NULL REFERENCES deployments(id),
+    stage           TEXT NOT NULL,
+    signal          TEXT NOT NULL,
+    started_at      TEXT NOT NULL,
+    ended_at        TEXT,
+    proposed_owner  TEXT NOT NULL,
+    proposed_reason TEXT NOT NULL,
+    proposal_basis  TEXT NOT NULL DEFAULT '',
+    evidence        TEXT NOT NULL DEFAULT '',
+    dedupe_key      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'open',
+    confirmed_owner TEXT,
+    confirmed_reason TEXT,
+    confirmed_by    TEXT,
+    confirmed_at    TEXT,
+    weight          REAL NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_delays_key ON delays(tenant_id, dedupe_key);
+CREATE INDEX IF NOT EXISTS ix_delays_dep ON delays(tenant_id, deployment_id);
+CREATE TABLE IF NOT EXISTS time_entries (
+    id            {AUTO},
+    tenant_id     TEXT NOT NULL,
+    user_id       TEXT NOT NULL REFERENCES users(id),
+    deployment_id TEXT,
+    day           TEXT NOT NULL,
+    hours         REAL NOT NULL,
+    source        TEXT NOT NULL DEFAULT 'import',
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_time_user ON time_entries(tenant_id, user_id, day);
+CREATE TABLE IF NOT EXISTS opportunities (
+    id             TEXT PRIMARY KEY,
+    tenant_id      TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    customer       TEXT NOT NULL DEFAULT '',
+    use_case       TEXT NOT NULL DEFAULT '',
+    value          REAL NOT NULL DEFAULT 0,
+    probability    REAL NOT NULL DEFAULT 0,
+    stage          TEXT NOT NULL,
+    expected_start TEXT,
+    weekly_hours   REAL NOT NULL DEFAULT 0,
+    source         TEXT NOT NULL DEFAULT 'import',
+    external_id    TEXT,
+    updated_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_opps_tenant ON opportunities(tenant_id, stage);
+CREATE TABLE IF NOT EXISTS flags (
+    id            TEXT PRIMARY KEY,
+    tenant_id     TEXT NOT NULL,
+    deployment_id TEXT NOT NULL REFERENCES deployments(id),
+    severity      TEXT NOT NULL,
+    text          TEXT NOT NULL,
+    rule_key      TEXT,
+    raised_by     TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'open',
+    handled_by    TEXT,
+    handled_at    TEXT,
+    note          TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_flags_dep ON flags(tenant_id, deployment_id, status);
+CREATE TABLE IF NOT EXISTS approvals (
+    id            TEXT PRIMARY KEY,
+    tenant_id     TEXT NOT NULL,
+    deployment_id TEXT NOT NULL REFERENCES deployments(id),
+    agent         TEXT NOT NULL,
+    request       TEXT NOT NULL,
+    detail        TEXT NOT NULL DEFAULT '',
+    requested_by  TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    decided_by    TEXT,
+    decided_at    TEXT,
+    created_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS checklist_items (
+    id            TEXT PRIMARY KEY,
+    tenant_id     TEXT NOT NULL,
+    deployment_id TEXT NOT NULL REFERENCES deployments(id),
+    label         TEXT NOT NULL,
+    position      INTEGER NOT NULL DEFAULT 0,
+    done          INTEGER NOT NULL DEFAULT 0,
+    done_by       TEXT,
+    done_at       TEXT,
+    created_at    TEXT NOT NULL
+)
+"""),
 ]
 
 _AUTO = {"sqlite": "INTEGER PRIMARY KEY AUTOINCREMENT", "postgres": "BIGSERIAL PRIMARY KEY"}
@@ -308,7 +404,7 @@ def init(conn: DB) -> None:
 
 def reset(conn: DB) -> None:
     """Drop everything. Used by `fieldwork seed` and tests; never by the API."""
-    tables = ["outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
+    tables = ["delays", "time_entries", "opportunities", "flags", "approvals", "checklist_items", "outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
               "tasks", "stage_events", "deployment_members", "deployments", "customers", "users",
               "tenants", "schema_migrations"]
     with conn.lock:

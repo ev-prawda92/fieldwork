@@ -40,6 +40,9 @@ REGISTRY = {
     "attribution": {"name": "Value attribution", "status": "live", "input": "json",
                     "does": "Value delivered against baseline, and delay days attributed to customer, vendor or third party",
                     "input_hint": 'JSON: {"metric", "baseline", "current", "volume_per_month", "cost_per_hour", "planned_days", "actual_days", "delays": [...]}'},
+    "value_study": {"name": "Value study", "status": "live", "input": "csv",
+                    "does": "Difference in differences against a comparison group, with a permutation test; refuses to call it below 8 subjects per group",
+                    "input_hint": "CSV: arm, subject, day, value   (lines: # effective: YYYY-MM-DD, # metric:, # unit: min, # volume_per_month:)"},
     "none":        {"name": "No engine", "status": "n/a", "does": ""},
 }
 

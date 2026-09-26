@@ -329,7 +329,125 @@ def attribution(text: str) -> dict:
                        "delay_share": share, "unattributed_days": unattributed, "delays": delays}}
 
 
+# -------------------------------------------------------------- Value study
+# A difference in differences with a permutation test. Two refusals are built
+# in because this is the number most likely to be quoted in a renewal: below
+# VS_MIN_PER_ARM subjects in either group the verdict is "cannot tell yet", and
+# the p-value comes from permuting the real per-subject changes rather than an
+# assumed distribution (handling times are skewed).
+
+VS_MIN_PER_ARM = 8
+VS_TRIALS = 4000
+VS_SEED = 20260901
+
+
+def _text_directive(text: str, name: str, default: str = "") -> str:
+    m = re.search(rf"^\s*#\s*{name}\s*[:=]\s*(.+?)\s*$", text, re.M | re.I)
+    return m.group(1) if m else default
+
+
+def _median(xs: list[float]) -> float:
+    s = sorted(xs)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def _permutation_p(treat: list[float], ctrl: list[float]) -> float:
+    import random
+    rng = random.Random(VS_SEED)
+    observed = abs(_median(treat) - _median(ctrl))
+    pool, k, hits = treat + ctrl, len(treat), 0
+    for _ in range(VS_TRIALS):
+        rng.shuffle(pool)
+        if abs(_median(pool[:k]) - _median(pool[k:])) >= observed:
+            hits += 1
+    return round((hits + 1) / (VS_TRIALS + 1), 4)
+
+
+def value_study(text: str) -> dict:
+    """Did the deployment work? Treatment (got the agent) vs comparison group,
+    the same metric before and after the effective date.
+
+    CSV: arm, subject, day, value   (arm is treatment or control)
+    Lines: # effective: 2026-07-01   # metric: minutes per claim   # unit: min
+           # higher_is_worse: 1       # volume_per_month: 12000
+    """
+    eff = _text_directive(text, "effective")
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", eff):
+        raise StageEngineError("add a line '# effective: YYYY-MM-DD' (the day the change went live)")
+    metric = _text_directive(text, "metric", "value")
+    unit = _text_directive(text, "unit", "")
+    worse_up = _directive(text, "higher_is_worse", 1) >= 0.5
+    volume = _directive(text, "volume_per_month", 0)
+    rows = _csv(text, {"arm", "subject", "day", "value"})
+    sides: dict = {"treatment": ({}, {}), "control": ({}, {})}
+    for i, r in enumerate(rows, 2):
+        arm = r["arm"].lower()
+        if arm not in sides:
+            raise StageEngineError(f"row {i}: arm must be treatment or control")
+        try:
+            v = float(r["value"])
+        except ValueError:
+            raise StageEngineError(f"row {i}: value isn't a number")
+        before, after = sides[arm]
+        (before if r["day"][:10] < eff else after).setdefault(r["subject"], []).append(v)
+
+    def per_subject(arm):
+        before, after = sides[arm]
+        return {k: (_median(before[k]), _median(after[k])) for k in before if k in after}
+
+    t, c = per_subject("treatment"), per_subject("control")
+
+    def arm_out(d):
+        if not d:
+            return {"n": 0, "before": None, "after": None, "change": None}
+        b = round(_median([x[0] for x in d.values()]), 3)
+        a = round(_median([x[1] for x in d.values()]), 3)
+        return {"n": len(d), "before": b, "after": a, "change": round(a - b, 3)}
+
+    ta, ca = arm_out(t), arm_out(c)
+    base = {"metric": metric, "unit": unit, "effective_from": eff, "treatment": ta, "control": ca,
+            "higher_is_worse": worse_up, "min_per_arm": VS_MIN_PER_ARM}
+    if len(t) < VS_MIN_PER_ARM or len(c) < VS_MIN_PER_ARM:
+        verdict = (f"Cannot tell yet: {len(t)} and {len(c)} subjects have data on both sides of the change; "
+                   f"{VS_MIN_PER_ARM} are needed in each group. Reporting a number now is how a measurement "
+                   "stops being believed.")
+        return {"summary": "Cannot tell yet", "status": "info",
+                "result": {**base, "adjusted_change": None, "p_value": None, "verdict": verdict,
+                           "sufficient": False, "improved": None, "hours_saved_per_month": None}}
+    t_ch = [a - b for b, a in t.values()]
+    c_ch = [a - b for b, a in c.values()]
+    adjusted = round(_median(t_ch) - _median(c_ch), 3)
+    p = _permutation_p(t_ch, c_ch)
+    improved = adjusted < 0 if worse_up else adjusted > 0
+    tc, cc = ta["change"] or 0.0, ca["change"] or 0.0
+    if p > 0.10:
+        verdict, status = ("Not distinguishable from chance at this sample size. Re-check next period "
+                           "rather than claiming it."), "warn"
+    elif abs(adjusted) < 0.05 * max(abs(ta["before"] or 1), 1e-9):
+        verdict, status = "Statistically visible but operationally trivial.", "warn"
+    elif improved and abs(cc) > abs(tc):
+        verdict, status = ("The treated group improved, but the comparison group improved more: something "
+                           "else is doing the work."), "warn"
+    elif improved:
+        verdict, status = ("The treated group improved beyond the comparison group's trend, which is what a "
+                           "deployment that worked looks like."), "pass"
+    else:
+        verdict, status = "The treated group moved the wrong way relative to the comparison group.", "fail"
+    hours = None
+    if improved and volume and unit.lower() in ("min", "mins", "minutes"):
+        hours = round(abs(adjusted) * volume / 60, 1)
+    u = f" {unit}" if unit else ""
+    summary = f"{metric}: {adjusted:+g}{u} vs comparison (p={p:g})"
+    if hours:
+        summary += f" · {hours:,.0f} h/month"
+    return {"summary": summary, "status": status,
+            "result": {**base, "adjusted_change": adjusted, "p_value": p, "verdict": verdict,
+                       "sufficient": True, "improved": improved, "hours_saved_per_month": hours}}
+
+
 STAGE_ENGINES = {
+    "value_study": value_study,
     "census": census,
     "cortex": authority,
     "conformance": conformance,

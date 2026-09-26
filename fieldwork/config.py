@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 SCOPES = ("own", "all")
 FIELD_TYPES = ("text", "number", "date", "select", "bool")
 BUILTIN_ENGINES = ("none", "sendero", "threshold",
-                   "census", "cortex", "conformance", "golive", "attribution")
+                   "census", "cortex", "conformance", "golive", "attribution", "value_study")
 WIDGETS = {
     "today": "Today: what needs me",
     "kpis": "Headline numbers",
@@ -34,11 +34,20 @@ WIDGETS = {
     "my_tasks": "My open tasks",
     "team": "Team load",
     "findings": "Findings awaiting confirmation",
+    "clients": "My deployments as cards",
+    "hours": "My hours this week",
+    "flags": "Open flags and escalations",
+    "capacity": "Team capacity this week",
+    "unassigned": "Unassigned work",
+    "pipeline": "Sales pipeline and staffing checks",
+    "delays": "Who owns the delay",
+    "approvals": "Agent actions waiting for approval",
 }
 
 # Actions whose "own" scope has no meaning (they aren't about one deployment).
 WORKSPACE_ACTIONS = {"deployment.create", "people.read", "people.manage", "audit.read",
-                     "audit.verify", "engine.manage", "config.edit", "integrations.manage"}
+                     "audit.verify", "engine.manage", "config.edit", "integrations.manage",
+                     "pipeline.view", "pipeline.edit"}
 
 EVENTS = {
     "task.assigned": "A task is assigned to someone",
@@ -50,6 +59,9 @@ EVENTS = {
     "deployment.advanced": "A deployment moves stage",
     "deployment.health": "A deployment turns at risk or blocked",
     "report.created": "A status report is drafted",
+    "flag.raised": "A flag is raised on a deployment",
+    "delay.opened": "A delay opens and needs an owner confirmed",
+    "approval.requested": "An agent action is waiting for approval",
 }
 TRACKERS = ("github", "linear", "jira")
 
@@ -77,6 +89,11 @@ ACTIONS = {
     "audit.verify":       "Verify the audit hash chain",
     "engine.manage":      "Register and manage engines (scripts and integrations)",
     "config.edit":        "Edit workspace settings",
+    "delay.confirm":      "Confirm or reassign who owns a delay",
+    "flag.handle":        "Take, hand back and resolve flags",
+    "approval.decide":    "Approve or reject actions agents ask to take",
+    "pipeline.view":      "See the sales pipeline and staffing checks",
+    "pipeline.edit":      "Add and update pipeline opportunities",
 }
 
 DOERS = ("implementation_consultant", "fde", "ai_engineer")
@@ -116,27 +133,33 @@ DEFAULT_CONFIG: dict = {
         "customer.share":     {"head": "all", "engagement_manager": "own"},
         "report.create":      {"head": "all", "engagement_manager": "own", **{r: "own" for r in DOERS}},
         "integrations.manage": {"head": "all"},
+        "delay.confirm":      {"head": "all", "engagement_manager": "own"},
+        "flag.handle":        {"head": "all", "engagement_manager": "own"},
+        "approval.decide":    {"head": "all", "engagement_manager": "own"},
+        "pipeline.view":      {"head": "all", "engagement_manager": "all"},
+        "pipeline.edit":      {"head": "all", "engagement_manager": "all"},
     },
     "views": {
-        "head":                      ["today", "kpis", "chain", "team", "findings"],
-        "engagement_manager":        ["today", "kpis", "chain", "findings", "team"],
-        "implementation_consultant": ["today", "my_tasks", "chain"],
-        "fde":                       ["today", "my_tasks", "chain"],
-        "ai_engineer":               ["today", "my_tasks", "chain"],
-        "customer":                  ["chain"],
+        "head":                      ["kpis", "chain", "flags", "capacity", "delays", "findings", "pipeline"],
+        "engagement_manager":        ["kpis", "chain", "capacity", "unassigned", "flags", "approvals",
+                                      "findings", "today"],
+        "implementation_consultant": ["clients", "my_tasks", "hours", "today"],
+        "fde":                       ["clients", "my_tasks", "hours", "today"],
+        "ai_engineer":               ["clients", "my_tasks", "hours", "approvals", "today"],
+        "customer":                  ["clients", "my_tasks"],
     },
     "stages": [
-        {"key": "discover",  "name": "Discover",  "engines": ["census"],
+        {"key": "discover",  "name": "Discover",  "engines": ["census"], "target_days": 14,
          "exit_criteria": "Systems inventory and evidence gaps written up and read out"},
-        {"key": "integrate", "name": "Integrate", "engines": ["cortex"],
+        {"key": "integrate", "name": "Integrate", "engines": ["cortex"], "target_days": 21,
          "exit_criteria": "Agents connected with scoped permissions and human gates"},
-        {"key": "test",      "name": "Test",      "engines": ["conformance"],
+        {"key": "test",      "name": "Test",      "engines": ["conformance"], "target_days": 14,
          "exit_criteria": "Conformance suite green on customer data"},
-        {"key": "golive",    "name": "Go-live",   "engines": ["golive"],
+        {"key": "golive",    "name": "Go-live",   "engines": ["golive"], "target_days": 7,
          "exit_criteria": "Cutover complete, command center stood down"},
-        {"key": "adopt",     "name": "Adopt",     "engines": ["sendero"],
+        {"key": "adopt",     "name": "Adopt",     "engines": ["sendero"], "target_days": 30,
          "exit_criteria": "Friction points classified build vs training and routed"},
-        {"key": "value",     "name": "Value",     "engines": ["attribution"],
+        {"key": "value",     "name": "Value",     "engines": ["value_study", "attribution"], "target_days": 30,
          "exit_criteria": "Outcome measured and confirmed with the customer"},
     ],
     "integrations": {
@@ -161,6 +184,8 @@ DEFAULT_CONFIG: dict = {
         ],
     },
 }
+
+DEFAULT_TARGETS = {s["key"]: s["target_days"] for s in DEFAULT_CONFIG["stages"]}
 
 _KEY = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -355,7 +380,14 @@ def validate(cfg: dict, allow_http_engines: bool = False, known_urls: frozenset 
         bad = [e for e in engs if e not in engine_keys]
         if bad:
             raise ConfigError(f"stages.{k}: unknown engine(s) {bad}")
+        try:
+            target = int(s["target_days"] if s.get("target_days") is not None else DEFAULT_TARGETS.get(k, 14))
+        except (TypeError, ValueError):
+            raise ConfigError(f"stages.{k}: target_days must be a whole number of days")
+        if not 1 <= target <= 365:
+            raise ConfigError(f"stages.{k}: target_days must be between 1 and 365")
         out["stages"].append({"key": k, "name": str(s.get("name") or k)[:40], "engines": engs,
+                              "target_days": target,
                               "exit_criteria": str(s.get("exit_criteria", ""))[:280]})
 
     # fields
@@ -389,6 +421,11 @@ DERIVE = {
     "customer.share": "task.assign",
     "report.create": "task.create",
     "integrations.manage": "config.edit",
+    "delay.confirm": "finding.confirm",
+    "flag.handle": "deployment.staff",
+    "approval.decide": "finding.confirm",
+    "pipeline.view": "people.read",
+    "pipeline.edit": "deployment.create",
 }
 
 
@@ -412,6 +449,7 @@ def upgrade(cfg: dict) -> dict:
         if "engines" not in st:
             e = st.pop("engine", "none")
             st["engines"] = [] if e in (None, "none") else [e]
+        st.setdefault("target_days", DEFAULT_TARGETS.get(st.get("key"), 14))
     return cfg
 
 
