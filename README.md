@@ -1,6 +1,6 @@
 # Fieldwork
 
-The platform deployment teams build their methodology on.
+The deployment engine for deployment teams: run every deployment, see why it stalls, and prove what it delivered.
 
 Every software company that sells complex products has a deployment team:
 engagement managers, implementation consultants, forward-deployed engineers,
@@ -23,122 +23,95 @@ Fieldwork doesn't sell a methodology. It's the system of record teams build thei
 ## Run it
 
 ```
-pip install -r requirements.txt
-python -m fieldwork seed
-FIELDWORK_DEMO=1 FIELDWORK_ALLOW_PRIVATE_ENGINES=1 python -m fieldwork serve
+pip install -e ".[dev]"
+fieldwork engines                          # the built-in engines and their inputs
+fieldwork run census systems.csv           # run an engine on a file, no server
+fieldwork seed                             # demo workspace
+FIELDWORK_DEMO=1 FIELDWORK_ALLOW_PRIVATE_ENGINES=1 fieldwork serve
 ```
 
-To let the demo's own webhook engine answer, run this in a second terminal:
+Open http://127.0.0.1:8000 for the console and http://127.0.0.1:8000/welcome for the landing page.
+To let the demo's own webhook engine answer locally, also run
+`FIELDWORK_ENGINE_SECRET=fws_demo_readiness_signing_secret python examples/engines/readiness_engine.py`.
+Hosted demos serve that engine themselves.
+
+**Deploy:** see [LAUNCH.md](LAUNCH.md): one-click Render blueprint (`render.yaml`), or `docker compose up` for Postgres locally.
 
 ```
-FIELDWORK_ENGINE_SECRET=fws_demo_readiness_signing_secret python examples/engines/readiness_engine.py
+python -m pytest -q                                              # 70 tests on SQLite (130 with Postgres too)
+FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # plus the same tests on Postgres
 ```
 
-Open http://127.0.0.1:8000 and sign in as anyone on the demo team. **Meridian
-AI** has white-labeled its workspace as "Meridian Deploy", added its own
-go-live readiness script next to the built-in command center, and runs a
-latency probe inside a customer's environment that pushes results in.
+## What people use every day
 
-**Postgres:** `docker compose up` runs Fieldwork on Postgres 16. Or point any
-command at a database with `--db postgresql://...` or `FIELDWORK_DATABASE_URL`.
-Schema changes are versioned migrations (`python -m fieldwork migrate`), and
-existing SQLite databases upgrade in place.
-
-```
-python -m pytest -q                                              # 53 tests on SQLite
-FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # the same tests on Postgres too (98)
-```
+- **Today.** Blocked work, what's due, findings waiting for your confirmation, and deployments that moved or need attention.
+- **Status reports, drafted for you.** Internal and customer versions, built only from the record: tasks, stage moves and confirmed findings. Share the customer version with one click, or copy it into an email.
+- **Slack.** Alerts when work is blocked, assigned or waiting for confirmation, plus a weekday digest.
+- **Two-way task sync** with GitHub Issues, Linear and Jira. Link a deployment to a repo, team or project and tasks flow both ways. Changes that arrive from the tracker are never echoed back.
+- **Signed event webhooks** to feed any other system.
+- **AI tools.** An MCP server at `/mcp` works with Claude Code, Claude Desktop, Cursor, Codex, Gemini CLI, the OpenAI API and the Grok API. The console's AI tools page has copy-paste setup for each. An agent acts as its person, with their permissions, and its changes are audited under their name.
+- **Import.** Bring deployments and tasks in from a spreadsheet.
 
 ## The default template
 
 | Role | Sees | Can |
 |---|---|---|
-| Head of Deployments | all deployments | everything, including settings, engines, people and company sign-in |
-| Engagement Manager | their engagements | open deployments, move stages freely, staff, assign, confirm findings, share with the customer, match bench |
-| Implementation Consultant, FDE, AI Engineer | deployments they're on | advance one stage, own tasks, run engines |
+| Head of Deployments | all deployments | everything, including settings, integrations, engines, people and sign-in |
+| Engagement Manager | their engagements | open deployments, move stages freely, staff, assign, confirm findings, share with the customer, draft reports, match bench |
+| Implementation Consultant, FDE, AI Engineer | deployments they're on | advance one stage, own tasks, run engines, draft reports |
 | Customer Stakeholder | their own deployment, **shared items only** | read, and work tasks assigned to them |
 
-Stages: Discover → Integrate → Test → Go-live → Adopt → Value.
-
-Every row, stage and permission above is editable in Workspace settings.
+Stages: Discover → Integrate → Test → Go-live → Adopt → Value. Every row, stage, permission and home screen is editable in Workspace settings.
 
 ## Engines
 
-Engines do the diagnostic work at each stage. A stage can carry up to four.
-Their output becomes a **finding**, which someone other than the person who ran
-the engine has to confirm before it counts.
-
 | Stage | Built-in engine | What it decides |
 |---|---|---|
-| Discover | **Census** | Which systems in the inventory are ready, and which have ownership, access, documentation or data-control gaps. Writes the findings memo. |
-| Integrate | **Cortex authority check** | Runs the agent's delegated authority through Cortex's authorization engine (vendored unchanged) against expected scenarios, and flags risky grants such as write actions with no human gate. |
+| Discover | **Census** | Which systems are ready, and which have ownership, access, documentation or data-control gaps. Writes the findings memo. |
+| Integrate | **Cortex authority check** | Runs an agent's delegated authority through Cortex (vendored unchanged) against expected scenarios, and flags risky grants such as write actions with no human gate. |
 | Test | **Conformance** | Pass rate by category against a bar; any critical miss fails the stage. |
 | Go-live | **Command center** | Whether it's safe to stand down: no open sev1, sev2 under a limit, new issues trending down. |
-| Adopt | **Sendero** | Whether a friction point is a BUILD problem or a TRAINING problem (two-level outlier test). |
-| Value | **Value attribution** | Value delivered against baseline, and every day of delay attributed to customer, vendor or third party. |
-| any | **Threshold** (bench) | Who can staff the deployment, gate by gate, with citations; never infers what it can't see. |
+| Adopt | **Sendero** | Whether friction is a BUILD or TRAINING problem (two-level outlier test). |
+| Value | **Value attribution** | Value against baseline, and every day of delay attributed to customer, vendor or third party. |
+| any | **Threshold** (bench) | Who can staff the deployment, gate by gate, with citations. |
 
-All deterministic, with no model calls, and every conclusion traces back to input rows.
+A stage can carry up to four engines. Teams plug in their own as signed webhooks or push engines ([docs/ENGINE_PLUGINS.md](docs/ENGINE_PLUGINS.md)). Every result is a finding that someone other than the runner confirms.
 
-**Customer-built engines** ([docs/ENGINE_PLUGINS.md](docs/ENGINE_PLUGINS.md)):
-- **Webhook:** Fieldwork calls the team's service with a signed request.
-- **Push:** the team's script, running anywhere (including behind a customer's firewall), posts results in with an engine token.
+## Guarantees (each is a test)
 
-## Sharing with the customer
-
-Tasks and findings are **internal** until someone with the "share with the
-customer" permission shares them. A finding has to be confirmed before it can
-be shared.
-
-Customer roles see only shared items, and can work the tasks assigned to them.
-Assigning a task to a customer shares it automatically; it can't be made
-internal again while they own it.
-
-## Company sign-in
-
-Each workspace connects its own identity provider: any OpenID Connect provider,
-including Okta, Microsoft Entra ID and Google Workspace. The flow is
-authorization code with PKCE. The ID token's signature is checked against the
-provider's published keys, along with issuer, audience, expiry, nonce, verified
-email and allowed domains. Sessions last 12 hours.
-
-Options:
-- **Just-in-time accounts:** create new people on first sign-in with a chosen role.
-- **Required mode:** personal access tokens stop working, except for people who can edit settings (break-glass access if the identity provider is down).
-
-## Guarantees (each is a test, on SQLite and Postgres)
-
-- **Tenant isolation.** No read, write, assignment, engine run, engine token or sign-in crosses workspaces. Another tenant's objects return 404, not 403.
-- **Scoped access from the customer's own permission map.** When a release adds a permission, existing workspaces inherit it from the closest existing one, so nobody silently gains or loses access.
-- **Customer-safe views.** Internal tasks and findings never reach customer roles, including through task counts or direct links.
-- **Tamper-evident audit.** Every write, including engine runs, engine pushes and sign-ins, appends to a per-tenant SHA-256 hash chain in the same transaction. On Postgres a per-tenant advisory lock keeps the chain linear across API processes. Editing any row is detected.
-- **Two-person confirmation** on every finding.
-- **Secrets encrypted at rest.** Webhook signing secrets and SSO client secrets use Fernet with rotatable keys (`FIELDWORK_SECRET_KEYS`, `python -m fieldwork rotate-keys`). Engine tokens and access tokens are stored only as hashes.
-- **Sign-in hardening.** State is single-use and expires in 10 minutes, PKCE is enforced, the nonce is checked, the key set is re-fetched when the provider rotates keys, and only asymmetric signing algorithms are accepted.
-- **Engine safety.** Webhook calls are signed, refuse redirects, cap response size and time out. In SaaS mode they must use https and can't reach private or cloud-metadata addresses.
-- **Settings can't break the workspace.** Strict validation. Roles people hold, stages with live deployments, and your own access to settings can't be removed.
+- **Tenant isolation** across reads, writes, engine runs and tokens, inbound tracker webhooks, and sign-in. Another tenant's objects return 404.
+- **Scoped permissions from the customer's own map.** New permissions in a release inherit from the closest existing one.
+- **Customer-safe views.** Internal tasks, findings and reports never reach customer roles.
+- **Tamper-evident audit** of every write, engine run, sign-in, AI-tool action and tracker change, on a per-tenant hash chain (advisory-locked on Postgres).
+- **Secrets encrypted at rest** (Fernet, rotatable). Tokens are stored as hashes.
+- **Company sign-in** over OIDC with PKCE, nonce, audience, expiry and domain checks. Required mode is available.
+- **Outbound safety.** Every call to engines, Slack, trackers, webhooks and identity providers is guarded against private addresses, refuses redirects, is size-capped and times out. It's queued in an outbox with retries, never made while a request is open.
+- **Inbound safety.** Tracker webhooks must be signed with the workspace's secret.
 
 ## Layout
 
 ```
-fieldwork/app.py            API: sign-in, tenancy, scoped permissions, deployments, tasks, sharing, engines, audit
-fieldwork/config.py         workspace config: branding, roles, permissions, views, stages, engines, fields, SSO
-fieldwork/db.py             SQLite / Postgres adapter and versioned migrations
-fieldwork/sso.py            OpenID Connect sign-in
-fieldwork/crypto.py         encryption at rest and key rotation
-fieldwork/plugins.py        customer-built engines: signed webhook calls, push ingestion
-fieldwork/audit.py          hash-chained audit log
-fieldwork/engines/          stage engines, Sendero, Threshold, vendored Cortex core
-fieldwork/seed.py           demo workspace and sample inputs
-frontend/index.html         the console, one file, no build step
-examples/engines/           a webhook engine and a push engine to copy from
-tests/                      53 tests (98 with Postgres)
+fieldwork/app.py         core API: sign-in, tenancy, permissions, deployments, tasks, sharing, engines, audit
+fieldwork/launch.py      Today, reports, integrations, import, personal tokens, operator metrics, access gate
+fieldwork/mcp.py         MCP server (/mcp) and stdio bridge
+fieldwork/events.py      events, outbox worker, Slack, webhooks, digest
+fieldwork/trackers.py    GitHub, Linear, Jira two-way sync
+fieldwork/reports.py     status report drafting
+fieldwork/config.py      workspace config and validation
+fieldwork/db.py          SQLite / Postgres adapter and migrations
+fieldwork/sso.py         OpenID Connect sign-in
+fieldwork/crypto.py      encryption at rest
+fieldwork/plugins.py     customer-built engines
+fieldwork/engines/       stage engines, Sendero, Threshold, vendored Cortex core
+fieldwork/static/        console (index.html) and landing page (welcome.html)
+examples/engines/        a webhook engine and a push engine to copy from
 ```
 
 ## Not built yet
 
-- SAML (OIDC covers most enterprise providers) and SCIM user provisioning.
-- A connection pool. Today it's one serialized connection per API process: correct, but not yet built for high concurrency.
-- Pinning the resolved IP for webhook and identity-provider calls, to close DNS-rebinding gaps in the address guard.
-- Notifications (email/Slack) when something is shared, assigned or blocked.
-- A managed KMS integration. Today keys arrive through `FIELDWORK_SECRET_KEYS` from whatever secret manager you run.
+- OAuth for remote MCP, which ChatGPT and Claude.ai connectors require. The other AI tools work today.
+- SAML and SCIM provisioning.
+- Slack slash commands and direct messages (today: channel alerts and the digest).
+- Assignee sync with trackers (status and title sync both ways today).
+- AI drafting with each team's own model. Reports are deterministic today.
+- A connection pool, and IP pinning for outbound calls.

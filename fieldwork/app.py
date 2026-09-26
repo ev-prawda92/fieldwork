@@ -24,10 +24,10 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from . import audit, config, crypto, db, engines, plugins, sso
+from . import audit, config, crypto, db, engines, events, plugins, sso, trackers
 from .engines import stages
 
-FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
+FRONTEND = Path(__file__).resolve().parent / "static"
 VISIBILITY = ("internal", "shared")
 
 
@@ -123,15 +123,28 @@ def engine_catalog(cfg: dict) -> dict:
     return cat
 
 
-def create_app(db_url: str | None = None) -> FastAPI:
+def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
+    """background=True (used by `serve`) starts the outbox worker and, in demo mode, the demo reset."""
     conn = db.connect(db_url)
     db.init(conn)
-    app = FastAPI(title="Fieldwork", version="0.3.0",
+    app = FastAPI(title="Fieldwork", version="0.4.0",
                   description="The platform deployment teams build their methodology on")
     app.state.conn = conn
 
     def load_tenant(tid: str):
         return conn.execute("SELECT * FROM tenants WHERE id=?", (tid,)).fetchone()
+
+    def emit(c: "Ctx", event: str, dep_id: str | None = None, **data) -> None:
+        """Queue notifications for an event. Call inside the change's transaction."""
+        if dep_id:
+            d = conn.execute("SELECT name FROM deployments WHERE id=?", (dep_id,)).fetchone()
+            data = {"deployment_id": dep_id, "deployment": d["name"] if d else "", **data}
+        data.setdefault("actor", c.user["name"])
+        events.emit(conn, c.cfg, c.tenant_id, event, data)
+
+    def uname(uid: str | None) -> str | None:
+        r = conn.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone() if uid else None
+        return r["name"] if r else None
 
     def ctx(authorization: str = Header(default="")) -> Ctx:
         if not authorization.lower().startswith("bearer "):
@@ -140,14 +153,24 @@ def create_app(db_url: str | None = None) -> FastAPI:
         th = token_hash(tok)
         user = conn.execute("SELECT * FROM users WHERE token_hash=?", (th,)).fetchone()
         via = "token"
-        if not user:
+        if not user and tok.startswith("fwp_"):
+            pt = conn.execute("SELECT * FROM personal_tokens WHERE token_hash=?", (th,)).fetchone()
+            if not pt:
+                raise HTTPException(401, "invalid or revoked token")
+            user = conn.execute("SELECT * FROM users WHERE id=?", (pt["user_id"],)).fetchone()
+            via = "personal_token"
+            if not pt["last_used_at"] or pt["last_used_at"] < (utcnow() - timedelta(minutes=5)).isoformat():
+                with db.tx(conn):
+                    conn.execute("UPDATE personal_tokens SET last_used_at=? WHERE token_hash=?",
+                                 (utcnow().isoformat(), th))
+        elif not user:
             s = conn.execute("SELECT * FROM sessions WHERE token_hash=?", (th,)).fetchone()
             if not s or s["expires_at"] <= utcnow().isoformat():
                 raise HTTPException(401, "invalid or expired sign-in")
             user = conn.execute("SELECT * FROM users WHERE id=?", (s["user_id"],)).fetchone()
             via = "sso"
-            if not user:
-                raise HTTPException(401, "invalid sign-in")
+        if not user:
+            raise HTTPException(401, "invalid sign-in")
         c = Ctx(conn, user, load_tenant(user["tenant_id"]), via)
         # When a workspace requires company sign-in, personal tokens only work
         # for people who can edit settings (break-glass access if the IdP is down).
@@ -167,6 +190,10 @@ def create_app(db_url: str | None = None) -> FastAPI:
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(FRONTEND / "index.html")
+
+    @app.get("/welcome", include_in_schema=False)
+    def welcome():
+        return FileResponse(FRONTEND / "welcome.html")
 
     @app.get("/api/health")
     def health():
@@ -195,6 +222,18 @@ def create_app(db_url: str | None = None) -> FastAPI:
         if engine_key not in SAMPLE_INPUTS:
             raise HTTPException(404, "no sample for this engine")
         return {"input": SAMPLE_INPUTS[engine_key]}
+
+    @app.post("/demo-engines/readiness", include_in_schema=False)
+    async def demo_readiness(request: Request):
+        if not demo_on():
+            raise HTTPException(404, "not found")
+        from .demo_readiness import score
+        from .seed import DEMO_ENGINE_SECRET
+        body = await request.body()
+        if not plugins.verify_signature(DEMO_ENGINE_SECRET, request.headers.get("x-fieldwork-timestamp", ""),
+                                        body, request.headers.get("x-fieldwork-signature", "")):
+            raise HTTPException(401, "bad signature")
+        return score(json.loads(body).get("input", ""))
 
     @app.get("/api/me")
     def me(c: Ctx = Depends(ctx)):
@@ -563,6 +602,8 @@ def create_app(db_url: str | None = None) -> FastAPI:
             conn.execute("UPDATE deployments SET stage=?, updated_at=? WHERE id=?", (body.to_stage, ts, dep_id))
             add_stage_event(c, dep_id, r["stage"], body.to_stage, body.note, ts)
             c.log("deployment.advance", dep_id, {"from": r["stage"], "to": body.to_stage, "note": body.note})
+            emit(c, "deployment.advanced", dep_id, to=body.to_stage,
+                 to_name=next(x["name"] for x in c.cfg["stages"] if x["key"] == body.to_stage))
         return {"stage": body.to_stage}
 
     class PatchDeployment(BaseModel):
@@ -596,6 +637,8 @@ def create_app(db_url: str | None = None) -> FastAPI:
             conn.execute(f"UPDATE deployments SET {', '.join(k + '=?' for k in changes)} WHERE id=?",
                          (*changes.values(), dep_id))
             c.log("deployment.update", dep_id, detail)
+            if changes.get("health") in ("at_risk", "blocked") and changes["health"] != r["health"]:
+                emit(c, "deployment.health", dep_id, health=changes["health"])
         return {"changed": [k for k in changes if k != "updated_at"]}
 
     class MemberIn(BaseModel):
@@ -701,6 +744,9 @@ def create_app(db_url: str | None = None) -> FastAPI:
                           "open", body.due, c.uid, ts, ts, visibility))
             c.log("task.create", tid, {"deployment": body.deployment_id, "assignee": assignee,
                                        "title": body.title, "visibility": visibility})
+            if assignee != c.uid:
+                emit(c, "task.assigned", body.deployment_id, title=body.title, assignee=a["name"])
+            trackers.queue_push(conn, c.tenant_id, c.cfg, dep, tid)
         return {"id": tid, "visibility": visibility}
 
     class TaskPatch(BaseModel):
@@ -748,6 +794,17 @@ def create_app(db_url: str | None = None) -> FastAPI:
             conn.execute(f"UPDATE tasks SET {', '.join(k + '=?' for k in changes)} WHERE id=?",
                          (*changes.values(), task_id))
             c.log("task.update", task_id, {k: v for k, v in changes.items() if k != "updated_at"})
+            title = t["title"]
+            assignee_name = uname(changes.get("assignee_id", t["assignee_id"]))
+            if changes.get("status") == "blocked" and t["status"] != "blocked":
+                emit(c, "task.blocked", t["deployment_id"], title=title, assignee=assignee_name)
+            if changes.get("status") == "done" and t["status"] != "done":
+                emit(c, "task.done", t["deployment_id"], title=title)
+            if "assignee_id" in changes and changes["assignee_id"] != t["assignee_id"]:
+                emit(c, "task.assigned", t["deployment_id"], title=title, assignee=assignee_name)
+            if set(changes) & {"status", "title"}:
+                dep_row = conn.execute("SELECT * FROM deployments WHERE id=?", (t["deployment_id"],)).fetchone()
+                trackers.queue_push(conn, c.tenant_id, c.cfg, dep_row, task_id)
         return {"changed": [k for k in changes if k != "updated_at"]}
 
     # ------------------------------------------------------------- engines
@@ -829,6 +886,13 @@ def create_app(db_url: str | None = None) -> FastAPI:
                           None, None, actor or c.uid, audit.now(), "internal"))
             c.log("engine.run", fid, {"engine": engine, "deployment": dep_id, "title": title,
                                       "result_digest": digest}, actor=actor)
+            summary = result.get("summary") if isinstance(result, dict) else None
+            if engine == "sendero":
+                summary = f"{result.get('classification')} ({result.get('confidence_pct')}% confidence)"
+            elif engine == "threshold":
+                summary = f"{len(result.get('ranked', []))} people scored"
+            emit(c, "finding.created", dep_id, title=title, summary=summary or "",
+                 engine_name=engine_catalog(c.cfg).get(engine, {}).get("name", engine))
         return fid
 
     class SenderoIn(BaseModel):
@@ -959,6 +1023,7 @@ def create_app(db_url: str | None = None) -> FastAPI:
         with db.tx(conn):
             conn.execute("UPDATE findings SET confirmed_by=?, confirmed_at=? WHERE id=?", (c.uid, audit.now(), fid))
             c.log("finding.confirm", fid, {"engine": f["engine"], "deployment": f["deployment_id"]})
+            emit(c, "finding.confirmed", f["deployment_id"], title=f["title"])
         return {"ok": True}
 
     class ShareIn(BaseModel):
@@ -974,6 +1039,8 @@ def create_app(db_url: str | None = None) -> FastAPI:
         with db.tx(conn):
             conn.execute("UPDATE findings SET visibility=? WHERE id=?", (vis, fid))
             c.log("finding.share", fid, {"visibility": vis, "deployment": f["deployment_id"]})
+            if vis == "shared":
+                emit(c, "finding.shared", f["deployment_id"], title=f["title"])
         return {"visibility": vis}
 
     # ----------------------------------------------------------- dashboard
@@ -1019,5 +1086,29 @@ def create_app(db_url: str | None = None) -> FastAPI:
     def audit_verify(c: Ctx = Depends(ctx)):
         c.require("audit.verify")
         return audit.verify(conn, c.tenant_id)
+
+    # ------------------------------------------------------ launch features
+    from types import SimpleNamespace
+    from . import launch, mcp
+    deps = SimpleNamespace(conn=conn, ctx=ctx, Ctx=Ctx, emit=emit, dep_out=dep_out,
+                           visible_deployments=visible_deployments, tasks=tasks)
+    launch.register(app, deps)
+    mcp.register(app)
+
+    if background:
+        @app.on_event("startup")
+        def _start_background():
+            app.state.worker_stop = events.start_worker(conn)
+            minutes = float(os.environ.get("FIELDWORK_DEMO_RESET_MINUTES", "0") or 0)
+            if demo_on() and minutes > 0:
+                import threading
+                from .seed import seed
+
+                def reset_loop():
+                    while not app.state.worker_stop.wait(minutes * 60):
+                        with conn.lock:
+                            seed(conn)
+
+                threading.Thread(target=reset_loop, name="fieldwork-demo-reset", daemon=True).start()
 
     return app

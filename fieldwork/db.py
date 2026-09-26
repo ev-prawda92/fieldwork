@@ -166,6 +166,49 @@ CREATE TABLE IF NOT EXISTS tenant_secrets (
 );
 CREATE INDEX IF NOT EXISTS ix_sessions_user ON sessions(user_id)
 """),
+    (4, "launch: notifications, tracker sync, reports, personal tokens", """
+CREATE TABLE IF NOT EXISTS outbox (
+    id          {AUTO},
+    tenant_id   TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    next_at     TEXT NOT NULL,
+    last_error  TEXT,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_outbox_due ON outbox(status, next_at);
+CREATE TABLE IF NOT EXISTS task_links (
+    task_id     TEXT NOT NULL REFERENCES tasks(id),
+    tenant_id   TEXT NOT NULL,
+    provider    TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    url         TEXT NOT NULL DEFAULT '',
+    synced_at   TEXT NOT NULL,
+    PRIMARY KEY (task_id, provider)
+);
+CREATE INDEX IF NOT EXISTS ix_links_ext ON task_links(tenant_id, provider, external_id);
+CREATE TABLE IF NOT EXISTS reports (
+    id            TEXT PRIMARY KEY,
+    tenant_id     TEXT NOT NULL,
+    deployment_id TEXT NOT NULL REFERENCES deployments(id),
+    audience      TEXT NOT NULL,
+    body_md       TEXT NOT NULL,
+    visibility    TEXT NOT NULL DEFAULT 'internal',
+    created_by    TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS personal_tokens (
+    token_hash  TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id),
+    tenant_id   TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    last_used_at TEXT
+);
+ALTER TABLE deployments ADD COLUMN sync_json TEXT NOT NULL DEFAULT '{}'
+"""),
 ]
 
 _AUTO = {"sqlite": "INTEGER PRIMARY KEY AUTOINCREMENT", "postgres": "BIGSERIAL PRIMARY KEY"}
@@ -181,7 +224,8 @@ class DB:
         self._in_tx = 0
 
     def _sql(self, sql: str) -> str:
-        return sql.replace("?", "%s") if self.dialect == "postgres" else sql
+        # Postgres placeholders are %s, so any literal % (e.g. LIKE 'x%') is escaped first.
+        return sql.replace("%", "%%").replace("?", "%s") if self.dialect == "postgres" else sql
 
     def execute(self, sql: str, params: tuple | list = ()):
         with self.lock:
@@ -264,7 +308,7 @@ def init(conn: DB) -> None:
 
 def reset(conn: DB) -> None:
     """Drop everything. Used by `fieldwork seed` and tests; never by the API."""
-    tables = ["sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
+    tables = ["outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
               "tasks", "stage_events", "deployment_members", "deployments", "customers", "users",
               "tenants", "schema_migrations"]
     with conn.lock:

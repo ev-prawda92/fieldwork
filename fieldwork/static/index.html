@@ -178,7 +178,9 @@ async function signIn(token) {
   try { S.me = await api("/api/me"); } catch (e) { S.token = null; toast("That token wasn't accepted", true); return; }
   try { sessionStorage.setItem("fw_token", S.token); } catch (e) {}
   await loadConfig();
-  S.view = "overview"; S.dep = null; render();
+  if (S.pendingDep) { S.view = "deployment"; S.dep = S.pendingDep; S.pendingDep = null; }
+  else { S.view = "overview"; S.dep = null; }
+  render();
 }
 async function loadConfig() {
   const c = await api("/api/config"); S.cfg = c.config; S.meta = c; S.engines = c.engines; applyBrand();
@@ -227,8 +229,10 @@ function render() {
     ["deployments", S.me.can["deployment.view"] === "all" ? "Deployments" : "My deployments", can("deployment.view")],
     ["tasks", "My work", can("task.create")],
     ["team", "Team", can("people.read")],
+    ["import", "Import", can("deployment.create")],
     ["audit", "Audit trail", can("audit.read")],
-    ["settings", "Workspace settings", can("config.edit") || can("engine.manage")],
+    ["ai", "AI tools", S.me.can["deployment.view"] !== undefined && S.me.user.role !== "customer"],
+    ["settings", "Workspace settings", can("config.edit") || can("engine.manage") || can("integrations.manage")],
   ].filter(x => x[2]);
   $("#root").innerHTML = `
   <div class="app">
@@ -246,7 +250,8 @@ function render() {
   </div>`;
   document.querySelectorAll("[data-v]").forEach(b => b.onclick = () => { S.view = b.dataset.v; S.dep = null; render(); });
   $("#out").onclick = signOut;
-  const views = { overview, deployments, deployment: deploymentView, tasks: tasksView, team, audit: auditView, settings };
+  const views = { overview, deployments, deployment: deploymentView, tasks: tasksView, team, audit: auditView, settings,
+    import: importView, ai: aiView };
   act(views[S.view])();
 }
 
@@ -257,13 +262,15 @@ function bindDeps(scope = document) { scope.querySelectorAll("[data-dep]").forEa
 async function overview() {
   const d = await api("/api/dashboard");
   const w = d.widgets;
+  const td = w.includes("today") ? await api("/api/today") : null;
   const parts = [];
-  if (w.includes("kpis") && d.kpis) parts.push(`<div class="grid kpis">
+  for (const k of w) {
+    if (k === "today" && td) parts.push(todayHtml(td));
+    if (k === "kpis" && d.kpis) parts.push(`<div class="grid kpis">
       <div class="card kpi"><div class="n">${d.kpis.deployments}</div><div class="l">Deployments</div></div>
       <div class="card kpi"><div class="n on_track">${d.kpis.on_track}</div><div class="l">On track</div></div>
       <div class="card kpi"><div class="n at_risk">${d.kpis.at_risk}</div><div class="l">At risk</div></div>
       <div class="card kpi"><div class="n blocked">${d.kpis.blocked}</div><div class="l">Blocked</div></div></div>`);
-  for (const k of w) {
     if (k === "my_tasks" && d.my_tasks) parts.push(`<div><h2>My open tasks</h2><div class="card" id="w_tasks"></div></div>`);
     if (k === "chain" && d.chain) parts.push(`<div><h2>${S.me.can["deployment.view"] === "all" ? "Every deployment, by stage" : "Your deployments, by stage"}</h2>${chainBoard(d.chain)}</div>`);
     if (k === "findings" && d.findings) parts.push(`<div><h2>Findings awaiting confirmation</h2><div class="card">${d.findings.length ? `<table><tbody>${d.findings.map(f => `<tr><td><a href="#" data-dep="${esc(f.deployment_id)}">${esc(f.title)}</a><div class="faint" style="font-size:12px">${esc(f.deployment)}</div></td><td class="engine-tag">${esc((S.engines[f.engine] || {}).name || f.engine)}</td><td class="faint mono" style="font-size:12px">${fmtDate(f.created_at)}</td></tr>`).join("")}</tbody></table>` : `<div class="empty">Nothing waiting.</div>`}</div></div>`);
@@ -275,6 +282,18 @@ async function overview() {
     <div class="grid" style="gap:26px">${parts.join("") || `<div class="empty">Your home screen has no sections. A workspace admin can add them in settings.</div>`}</div>`;
   const wt = $("#w_tasks"); if (wt) renderTasks(d.my_tasks, wt, () => act(overview)(), true);
   bindDeps();
+}
+
+function todayHtml(t) {
+  const row = (title, sub, dep, right) => `<tr><td>${dep ? `<a href="#" data-dep="${esc(dep)}">${esc(title)}</a>` : esc(title)}<div class="faint" style="font-size:12px">${esc(sub)}</div></td><td style="text-align:right">${right || ""}</td></tr>`;
+  const blocks = [];
+  if (t.blocked.length) blocks.push(`<div><b class="blocked">Blocked</b><table>${t.blocked.map(x => row(x.title, x.deployment, x.deployment_id, pill("blocked"))).join("")}</table></div>`);
+  if (t.confirm.length) blocks.push(`<div><b>Waiting for your confirmation</b><table>${t.confirm.map(x => row(x.title, x.deployment, x.deployment_id, `<span class="engine-tag">${esc((S.engines[x.engine] || {}).name || x.engine)}</span>`)).join("")}</table></div>`);
+  if (t.due.length) blocks.push(`<div><b>Due soon</b>${t.overdue ? ` <span class="blocked" style="font-size:12px">· ${t.overdue} overdue</span>` : ""}<table>${t.due.map(x => row(x.title, x.deployment, x.deployment_id, `<span class="mono faint" style="font-size:12px">${fmtDate(x.due)}</span>`)).join("")}</table></div>`);
+  if (t.new.length) blocks.push(`<div><b>New for you</b><table>${t.new.map(x => row(x.title, x.deployment, x.deployment_id)).join("")}</table></div>`);
+  if (t.attention.length) blocks.push(`<div><b>Needs attention</b><table>${t.attention.map(x => row(x.name, "", x.id, pill(x.health))).join("")}</table></div>`);
+  if (t.moved.length) blocks.push(`<div><b>Moved in the last two days</b><table>${t.moved.map(x => row(`${x.deployment} → ${stageName(x.to_stage)}`, x.actor, x.deployment_id)).join("")}</table></div>`);
+  return `<div><h2>Today</h2><div class="card">${blocks.length ? `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px 28px">${blocks.join("")}</div>` : `<div class="empty">Nothing needs you right now.</div>`}</div></div>`;
 }
 
 function chainBoard(deps) {
@@ -348,9 +367,10 @@ function readFields(scope) {
 /* ---------------------------------------------------- deployment detail */
 async function deploymentView() {
   const id = S.dep;
-  const [d, tasks, findings] = await Promise.all([
+  const [d, tasks, findings, linkInfo, reps] = await Promise.all([
     api(`/api/deployments/${id}`), api(`/api/tasks?deployment_id=${encodeURIComponent(id)}`),
-    api(`/api/deployments/${id}/findings`)]);
+    api(`/api/deployments/${id}/findings`), api(`/api/deployments/${id}/links`), api(`/api/deployments/${id}/reports`)]);
+  S.links = linkInfo.links;
   const people = can("people.read") ? await api("/api/people") : [];
   const yc = a => d.you_can.includes(a);
   const keys = S.cfg.stages.map(s => s.key);
@@ -381,6 +401,10 @@ async function deploymentView() {
       <div class="grid">
         ${yc("engine.run") || yc("bench.match") ? `<div class="card" id="enginePanel"></div>` : ""}
         <div class="card"><h2>Findings</h2><div id="findings"></div></div>
+        <div class="card"><div class="row"><h2 style="margin:0">Status reports</h2><div class="spacer"></div>
+          ${yc("report.create") && teamView ? `<button class="btn small" data-rep="internal">Draft internal</button>` : ""}
+          ${yc("report.create") ? `<button class="btn small" data-rep="customer">Draft for customer</button>` : ""}</div>
+          <div id="reports" style="margin-top:10px"></div></div>
       </div>
       <div class="grid">
         <div class="card"><h2 style="margin:0">Tasks</h2>
@@ -392,6 +416,7 @@ async function deploymentView() {
             ${yc("customer.share") ? `<label class="row" style="gap:4px;font-size:12px;color:var(--dim)"><input type="checkbox" id="nts"> share with customer</label>` : ""}
             <button class="btn" id="ntgo">Add</button></div>` : ""}
         </div>
+        ${syncCard(linkInfo.sync, yc)}
         <div class="card"><h2 style="margin:0">Team</h2>
           <div style="margin-top:10px">${d.members.map(m => `<div class="row" style="padding:4px 0"><span>${esc(m.name)}</span><span class="faint" style="font-size:12px">${esc(roleName(m.role))}</span>${m.id === d.lead_id ? `<span class="pill plain">lead</span>` : ""}<div class="spacer"></div>
           ${yc("deployment.staff") ? `<button class="btn small" data-rm="${esc(m.id)}">Remove</button>` : ""}</div>`).join("")}</div>
@@ -424,6 +449,17 @@ async function deploymentView() {
 
   renderTasks(tasks, $("#tasklist"), reload, false, yc("task.update_any"), yc("customer.share") && teamView, teamView);
   renderFindings(findings, reload, yc("finding.confirm"), yc("customer.share"));
+  renderReports(reps, reload, yc("customer.share"));
+  document.querySelectorAll("[data-rep]").forEach(b => b.onclick = act(async () => {
+    b.disabled = true;
+    try { await api(`/api/deployments/${id}/reports`, { method: "POST", body: { audience: b.dataset.rep } }); toast("Report drafted"); reload(); }
+    finally { b.disabled = false; }
+  }));
+  const sg = $("#syncgo"); if (sg) sg.onclick = act(async () => {
+    const provider = $("#syncp").value || null;
+    await api(`/api/deployments/${id}/sync`, { method: "PUT", body: { provider, target: ($("#synct") || {}).value || "" } });
+    toast(provider ? `Syncing tasks with ${provider[0].toUpperCase() + provider.slice(1)}` : "Sync turned off"); reload();
+  });
   if ($("#enginePanel")) renderEngines(stage, d, reload, yc);
 }
 
@@ -432,7 +468,8 @@ function renderTasks(tasks, el, reload, showDep, updateAny, mayShare, showBadge)
   el.innerHTML = `<table><tbody>${tasks.map(t => {
     const editable = t.assignee_id === S.me.user.id || updateAny;
     return `<tr><td style="width:44%">${esc(t.title)}${showDep ? `<div class="faint" style="font-size:12px">${esc(t.deployment)}</div>` : ""}
-        ${t.visibility === "shared" && showBadge ? ` <span class="pill plain" style="color:var(--violet)">shared</span>` : ""}</td>
+        ${t.visibility === "shared" && showBadge ? ` <span class="pill plain" style="color:var(--violet)">shared</span>` : ""}
+        ${S.view === "deployment" && S.links && S.links[t.id] ? ` <a class="pill plain" style="text-decoration:none" href="${esc(S.links[t.id].url)}" target="_blank" rel="noopener">↗ ${esc(S.links[t.id].provider)} ${esc(S.links[t.id].external_id.length > 12 ? "" : S.links[t.id].external_id)}</a>` : ""}</td>
       <td class="muted">${esc(t.assignee || "—")}</td><td class="faint mono" style="font-size:12px">${fmtDate(t.due)}</td>
       <td>${editable ? `<select data-task="${esc(t.id)}" aria-label="Status">${["open", "in_progress", "blocked", "done"].map(s => `<option value="${s}" ${s === t.status ? "selected" : ""}>${s.replace("_", " ")}</option>`).join("")}</select>` : pill(t.status)}</td>
       ${mayShare ? `<td><button class="btn small" data-vis="${esc(t.id)}" data-to="${t.visibility === "shared" ? "internal" : "shared"}">${t.visibility === "shared" ? "Make internal" : "Share"}</button></td>` : ""}</tr>`;
@@ -443,6 +480,49 @@ function renderTasks(tasks, el, reload, showDep, updateAny, mayShare, showBadge)
   el.querySelectorAll("[data-vis]").forEach(b => b.onclick = act(async () => {
     await api(`/api/tasks/${b.dataset.vis}`, { method: "PATCH", body: { visibility: b.dataset.to } });
     toast(b.dataset.to === "shared" ? "Shared with the customer" : "Now internal only"); reload();
+  }));
+}
+
+function syncCard(sync, yc) {
+  const ints = S.cfg.integrations || {};
+  const enabled = ["github", "linear", "jira"].filter(p => (ints[p] || {}).enabled);
+  const label = { github: "GitHub", linear: "Linear", jira: "Jira" };
+  const hint = { github: "owner/repo", linear: "Linear team ID", jira: "Jira project key" };
+  if (!sync.provider && !(yc("deployment.staff") && enabled.length)) return "";
+  const current = sync.provider ? `<div class="muted" style="font-size:13px">Tasks sync both ways with <b>${esc(label[sync.provider])}</b> · <span class="mono">${esc(sync.target)}</span></div>` : `<div class="muted" style="font-size:13px">Not syncing with a tracker.</div>`;
+  const editor = yc("deployment.staff") && enabled.length ? `<div class="row" style="margin-top:8px">
+      <select id="syncp" aria-label="Tracker"><option value="">Off</option>${enabled.map(p => `<option value="${p}" ${p === sync.provider ? "selected" : ""}>${label[p]}</option>`).join("")}</select>
+      <input id="synct" placeholder="${esc(hint[sync.provider || enabled[0]])}" value="${esc(sync.target || "")}" style="flex:1;min-width:140px">
+      <button class="btn small" id="syncgo">Save</button></div>` : "";
+  return `<div class="card"><h2 style="margin:0 0 8px">Task sync</h2>${current}${editor}</div>`;
+}
+
+function mdToHtml(md) {
+  return md.split("\n").map(l => {
+    let h = esc(l).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+    if (l.startsWith("# ")) return `<h3 style="margin:4px 0">${h.slice(2)}</h3>`;
+    if (l.startsWith("## ")) return `<div style="margin:12px 0 4px;font-weight:600">${h.slice(3)}</div>`;
+    if (l.startsWith("- ")) return `<div style="padding-left:14px;text-indent:-10px">• ${h.slice(2)}</div>`;
+    return l.trim() ? `<div class="muted">${h}</div>` : "";
+  }).join("");
+}
+
+function renderReports(reps, reload, mayShare) {
+  const el = $("#reports");
+  if (!reps.length) { el.innerHTML = `<div class="empty">No reports yet. A draft is built from this deployment's tasks, stage moves and confirmed findings.</div>`; return; }
+  el.innerHTML = reps.map((r, i) => `<details ${i === 0 ? "open" : ""} style="padding:8px 0;border-bottom:1px solid var(--line)">
+    <summary><span style="color:var(--ink)">${r.audience === "customer" ? "Customer update" : "Internal update"}</span> · <span class="faint mono" style="font-size:12px">${fmtDate(r.created_at)}</span> · <span class="faint" style="font-size:12px">${esc(r.created_by_name)}</span>
+      ${r.visibility === "shared" ? ` <span class="pill plain" style="color:var(--violet)">shared with customer</span>` : ""}</summary>
+    <div class="card" style="background:var(--panel2);margin-top:8px">${mdToHtml(r.body_md)}</div>
+    <div class="row" style="margin-top:8px"><button class="btn small" data-copy="${i}">Copy as text</button>
+      ${mayShare && r.audience === "customer" ? `<button class="btn small" data-rshare="${esc(r.id)}" data-to="${r.visibility === "shared" ? "0" : "1"}">${r.visibility === "shared" ? "Unshare" : "Share with customer"}</button>` : ""}</div>
+  </details>`).join("");
+  el.querySelectorAll("[data-copy]").forEach(b => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(reps[+b.dataset.copy].body_md); toast("Copied"); } catch (e) { toast("Couldn't copy; select the text instead", true); }
+  });
+  el.querySelectorAll("[data-rshare]").forEach(b => b.onclick = act(async () => {
+    await api(`/api/reports/${b.dataset.rshare}/share`, { method: "POST", body: { shared: b.dataset.to === "1" } });
+    toast(b.dataset.to === "1" ? "Shared with the customer" : "Now internal only"); reload();
   }));
 }
 
@@ -652,6 +732,79 @@ async function auditView() {
   });
 }
 
+/* -------------------------------------------------------------- import */
+async function importView() {
+  const fieldCols = S.cfg.fields.deployment.map(f => f.key).join(",");
+  $("#main").innerHTML = `<h1>Import</h1><p class="sub">Bring existing deployments and tasks in from a spreadsheet. Save it as CSV, then paste it or pick the file.</p>
+    <div class="tabs" role="tablist"><button role="tab" class="on" data-kind="deployments">Deployments</button><button role="tab" data-kind="tasks">Tasks</button></div>
+    <div class="card grid">
+      <div id="imp_help" class="muted" style="font-size:13px"></div>
+      <textarea id="imp_csv" rows="10" style="width:100%" aria-label="CSV"></textarea>
+      <div class="row"><input type="file" id="imp_file" accept=".csv,text/csv" aria-label="CSV file"><div class="spacer"></div><button class="btn primary" id="imp_go">Import</button></div>
+      <div id="imp_out"></div></div>`;
+  let kind = "deployments";
+  const help = {
+    deployments: `Columns: <span class="mono">customer, deployment</span> (required), <span class="mono">stage, health, lead_email, industry${fieldCols ? ", " + esc(fieldCols) : ""}</span>. Customers are created if they don't exist.`,
+    tasks: `Columns: <span class="mono">deployment, title</span> (required), <span class="mono">assignee_email, status, due, share</span>. Deployment is matched by name. Tasks for customer contacts are shared with them automatically.`,
+  };
+  const example = {
+    deployments: "customer,deployment,stage,health,lead_email\nAcme Foods,Order-to-cash agent,Integrate,at risk,",
+    tasks: "deployment,title,assignee_email,status,due\nOrder-to-cash agent,Map invoice states,,open,2026-10-09",
+  };
+  const set = () => { $("#imp_help").innerHTML = help[kind]; $("#imp_csv").placeholder = example[kind]; };
+  set();
+  document.querySelectorAll("[data-kind]").forEach(b => b.onclick = () => {
+    kind = b.dataset.kind; document.querySelectorAll("[data-kind]").forEach(x => x.classList.toggle("on", x === b)); set();
+  });
+  $("#imp_file").onchange = async e => { const f = e.target.files[0]; if (f) $("#imp_csv").value = await f.text(); };
+  $("#imp_go").onclick = act(async () => {
+    const r = await api("/api/import", { method: "POST", body: { kind, csv: $("#imp_csv").value } });
+    $("#imp_out").innerHTML = `<div class="card" style="background:var(--panel2)"><b class="done">${r.created} imported</b>
+      ${r.errors.length ? `<div style="margin-top:6px;font-size:13px"><b class="at_risk">${r.errors.length} row(s) skipped</b>${r.errors.map(x => `<div class="muted">${esc(x)}</div>`).join("")}</div>` : ""}</div>`;
+    if (r.created) toast(`${r.created} ${kind} imported`);
+  });
+}
+
+/* ------------------------------------------------------------ AI tools */
+async function aiView() {
+  const toks = await api("/api/me/tokens");
+  const base = location.origin;
+  const tokenFor = S.newToken || "fwp_YOUR_TOKEN";
+  const snip = (title, note, code) => `<div class="card"><div class="row"><b>${esc(title)}</b><div class="spacer"></div><button class="btn small" data-copytext="${esc(code)}">Copy</button></div>
+    ${note ? `<div class="muted" style="font-size:13px;margin:4px 0">${note}</div>` : ""}<pre class="mono" style="font-size:12px;white-space:pre-wrap;margin:8px 0 0;color:var(--dim)">${esc(code)}</pre></div>`;
+  const mcpJson = (key) => JSON.stringify({ mcpServers: { fieldwork: { [key]: `${base}/mcp`, headers: { Authorization: `Bearer ${tokenFor}` } } } }, null, 2);
+  const stdioJson = JSON.stringify({ mcpServers: { fieldwork: { command: "fieldwork", args: ["mcp", "--url", base, "--token", tokenFor] } } }, null, 2);
+  $("#main").innerHTML = `<h1>AI tools</h1>
+    <p class="sub">Use ${esc(brand().product_name)} from Claude, Cursor, Codex, Gemini, the OpenAI API or Grok. Your AI tool acts as you, with your permissions. Everything it does appears in the audit trail under your name, and engine results still need someone else to confirm them.</p>
+    <div class="card grid" style="margin-bottom:14px">
+      <h2 style="margin:0">Your access tokens</h2>
+      ${toks.length ? `<table><thead><tr><th>Name</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${toks.map(t => `<tr><td>${esc(t.name)}</td><td class="mono faint" style="font-size:12px">${fmtDate(t.created_at)}</td><td class="mono faint" style="font-size:12px">${t.last_used_at ? fmtDate(t.last_used_at) : "never"}</td><td><button class="btn small" data-revoke="${esc(t.id)}">Revoke</button></td></tr>`).join("")}</tbody></table>` : `<div class="muted">No tokens yet.</div>`}
+      <div class="row"><input id="tok_name" placeholder="Name it after the tool, e.g. Cursor" style="flex:1;min-width:200px"><button class="btn primary" id="tok_go">Create token</button></div>
+      ${S.newToken ? `<div class="secret"><b>New token</b> <span class="muted">· shown once; it's filled into the setups below</span><code class="mono">${esc(S.newToken)}</code></div>` : ""}
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr))">
+      ${snip("Claude Code", "Run once in a terminal.", `claude mcp add --transport http fieldwork ${base}/mcp --header "Authorization: Bearer ${tokenFor}"`)}
+      ${snip("Cursor", "Add to ~/.cursor/mcp.json (or .cursor/mcp.json in a project).", mcpJson("url"))}
+      ${snip("Gemini CLI", "Add to ~/.gemini/settings.json.", mcpJson("httpUrl"))}
+      ${snip("Codex CLI", "Add to ~/.codex/config.toml. Uses the local bridge: pip install fieldwork first.", `[mcp_servers.fieldwork]\ncommand = "fieldwork"\nargs = ["mcp", "--url", "${base}", "--token", "${tokenFor}"]`)}
+      ${snip("Claude Desktop", "Add to claude_desktop_config.json. Uses the local bridge: pip install fieldwork first.", stdioJson)}
+      ${snip("OpenAI API (Responses / Agents)", "Pass as a remote MCP tool.", `tools=[{\n  "type": "mcp",\n  "server_label": "fieldwork",\n  "server_url": "${base}/mcp",\n  "headers": {"Authorization": "Bearer ${tokenFor}"},\n  "require_approval": "always"\n}]`)}
+      ${snip("Grok (xAI API)", "Add Fieldwork as a remote MCP tool with this URL and header. See xAI's Remote MCP Tools docs for the request shape.", `server_url:  ${base}/mcp\nheader:      Authorization: Bearer ${tokenFor}`)}
+      <div class="card"><b>ChatGPT and Claude.ai connectors</b><div class="muted" style="font-size:13px;margin-top:4px">These sign in to remote servers with OAuth, which is on the roadmap. Until then, use one of the setups here.</div></div>
+    </div>
+    <div class="card" style="margin-top:14px"><b>Try asking</b><div class="muted" style="font-size:14px;margin-top:6px">“What needs me today?” · “Mark the NetSuite connector task done on Northfield.” · “Run conformance on Castellan with these test results.” · “Draft a customer update for Harborview.”</div></div>`;
+  document.querySelectorAll("[data-copytext]").forEach(b => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copytext); toast("Copied"); } catch (e) { toast("Couldn't copy; select the text instead", true); }
+  });
+  $("#tok_go").onclick = act(async () => {
+    const r = await api("/api/me/tokens", { method: "POST", body: { name: $("#tok_name").value || "AI tool" } });
+    S.newToken = r.token; await aiView(); S.newToken = null;
+  });
+  document.querySelectorAll("[data-revoke]").forEach(b => b.onclick = act(async () => {
+    await api(`/api/me/tokens/${b.dataset.revoke}`, { method: "DELETE" }); toast("Token revoked"); aiView();
+  }));
+}
+
 /* ------------------------------------------------------------ settings */
 async function settings() {
   await loadConfig();
@@ -659,8 +812,9 @@ async function settings() {
   const cfg = JSON.parse(JSON.stringify(meta.config));
   const engines = await api("/api/engines");
   const ssoInfo = can("config.edit") ? await api("/api/sso") : null;
-  const tabs = [["branding", "Branding"], ["roles", "Roles & access"], ["views", "Home screens"], ["stages", "Deployment chain"], ["engines", "Engines"], ["sso", "Company sign-in"], ["fields", "Custom fields"]]
-    .filter(([k]) => k === "engines" ? can("engine.manage") : can("config.edit"));
+  const intInfo = can("integrations.manage") ? await api("/api/integrations") : null;
+  const tabs = [["branding", "Branding"], ["roles", "Roles & access"], ["views", "Home screens"], ["stages", "Deployment chain"], ["engines", "Engines"], ["integrations", "Integrations"], ["sso", "Company sign-in"], ["fields", "Custom fields"]]
+    .filter(([k]) => k === "engines" ? can("engine.manage") : k === "integrations" ? can("integrations.manage") && can("config.edit") : can("config.edit"));
   if (!tabs.some(t => t[0] === S.settingsTab)) S.settingsTab = tabs[0][0];
 
   const save = act(async () => {
@@ -741,6 +895,48 @@ async function settings() {
           ${Object.values(engines).filter(e => e.builtin && e.key !== "none").map(e => `<tr><td><b>${esc(e.name)}</b><div class="faint" style="font-size:12px">${esc(e.does)}</div></td><td>${e.status === "live" ? pill("done", "live") : `<span class="pill plain faint">planned</span>`}</td></tr>`).join("")}
         </tbody></table></div>`;
     }
+    if (t === "integrations" && intInfo) {
+      const ci = cfg.integrations, has = n => intInfo.secrets_set.includes(n);
+      const secretRow = (name, label, ph) => `<label class="f">${esc(label)} ${has(name) ? `<span class="done">· set (encrypted)</span>` : `<span class="at_risk">· not set</span>`}
+        <div class="row"><input type="password" data-secin="${name}" placeholder="${esc(has(name) ? "Enter a new value to replace it" : ph)}" style="flex:1"><button class="btn small" data-secgo="${name}">Save</button></div></label>`;
+      const inbound = p => `<div class="card" style="background:var(--panel2)"><div class="faint" style="font-size:12px">Point ${p === "github" ? "the repo's" : p === "linear" ? "Linear's" : "Jira's"} webhook at</div><code class="mono" style="font-size:12px;word-break:break-all">${esc(intInfo.inbound_webhooks[p])}</code>
+        <div class="row" style="margin-top:6px"><span class="faint" style="font-size:12px">Signing secret ${has(p + "_webhook_secret") ? "set" : "not set"}</span><button class="btn small" data-gen="${p}">Generate secret</button></div><div data-genout="${p}"></div></div>`;
+      body = `<div class="grid">
+        <div class="card grid"><h2 style="margin:0">Slack</h2>
+          <label class="row" style="gap:8px"><input type="checkbox" id="sl_on" ${ci.slack.enabled ? "checked" : ""}> Post to Slack</label>
+          ${secretRow("slack_webhook_url", "Incoming webhook URL", "https://hooks.slack.com/services/...")}
+          <div class="f" style="font-size:12px;color:var(--dim)">Post when
+            <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:4px;margin-top:4px">${Object.entries(intInfo.events).map(([e, l]) => `<label class="row" style="gap:6px;color:var(--ink);font-size:13px"><input type="checkbox" data-slev="${e}" ${ci.slack.events.includes(e) ? "checked" : ""}> ${esc(l)}</label>`).join("")}</div></div>
+          <div class="row"><button class="btn small" id="sl_test">Send test message</button><button class="btn small" id="sl_prev">Preview daily digest</button><button class="btn small" id="sl_send">Send digest now</button></div>
+          <div id="sl_out"></div></div>
+
+        <div class="card grid"><h2 style="margin:0">Event webhooks</h2>
+          <p class="muted" style="margin:0">Send events to any system: signed JSON with <span class="mono">X-Fieldwork-Signature</span>, same scheme as engine webhooks.</p>
+          ${ci.webhooks.length ? `<table><tbody>${ci.webhooks.map((h, i) => `<tr><td class="mono">${esc(h.id)}</td><td class="mono" style="font-size:12px;word-break:break-all">${esc(h.url)}</td><td class="faint" style="font-size:12px">${h.events.length} event(s)</td>
+            <td style="white-space:nowrap">${has("webhook:" + h.id) ? `<span class="done" style="font-size:12px">secret set</span>` : ""} <button class="btn small" data-gen="${esc(h.id)}">Generate secret</button> <button class="btn small" data-whdel="${i}">Remove</button><div data-genout="${esc(h.id)}"></div></td></tr>`).join("")}</tbody></table>` : `<div class="muted">None yet.</div>`}
+          <div class="row"><input id="wh_id" class="mono" placeholder="id, e.g. ops" style="width:120px"><input id="wh_url" placeholder="https://..." style="flex:1;min-width:200px"><button class="btn small" id="wh_add">Add (all events)</button></div>
+          <div class="faint" style="font-size:12px">Save settings after adding, then generate its secret.</div></div>
+
+        <div class="card grid"><h2 style="margin:0">GitHub Issues</h2>
+          <label class="row" style="gap:8px"><input type="checkbox" data-tron="github" ${ci.github.enabled ? "checked" : ""}> Sync tasks with GitHub</label>
+          <label class="f">API base<input data-trf="github.api_base" value="${esc(ci.github.api_base)}"></label>
+          ${secretRow("github_token", "Token (fine-grained, Issues read/write)", "github_pat_...")}${inbound("github")}</div>
+
+        <div class="card grid"><h2 style="margin:0">Linear</h2>
+          <label class="row" style="gap:8px"><input type="checkbox" data-tron="linear" ${ci.linear.enabled ? "checked" : ""}> Sync tasks with Linear</label>
+          ${secretRow("linear_api_key", "API key", "lin_api_...")}${inbound("linear")}</div>
+
+        <div class="card grid"><h2 style="margin:0">Jira</h2>
+          <label class="row" style="gap:8px"><input type="checkbox" data-tron="jira" ${ci.jira.enabled ? "checked" : ""}> Sync tasks with Jira</label>
+          <label class="f">Site URL<input data-trf="jira.base_url" value="${esc(ci.jira.base_url)}" placeholder="https://yourco.atlassian.net"></label>
+          <label class="f">Account email<input data-trf="jira.email" value="${esc(ci.jira.email)}"></label>
+          ${secretRow("jira_api_token", "API token", "Atlassian API token")}${inbound("jira")}</div>
+
+        <div class="card"><h2>Delivery</h2>
+          ${intInfo.delivery.length ? intInfo.delivery.map(x => `<span class="pill plain" style="margin:0 6px 6px 0">${esc(x.kind)} · ${esc(x.status)} · ${x.n}</span>`).join("") : `<div class="muted">Nothing sent yet.</div>`}
+          ${intInfo.recent_errors.length ? `<div style="margin-top:8px;font-size:12px"><b class="at_risk">Recent errors</b>${intInfo.recent_errors.map(e => `<div class="muted">${esc(e.kind)}: ${esc(e.last_error)}</div>`).join("")}</div>` : ""}</div>
+      </div>`;
+    }
     if (t === "sso" && ssoInfo) {
       const c = cfg.sso;
       body = `<div class="card grid" style="max-width:760px">
@@ -806,6 +1002,35 @@ async function settings() {
       el.checked ? v.add(el.dataset.w) : v.delete(el.dataset.w);
       cfg.views[el.dataset.role] = Object.keys(meta.widgets).filter(w => v.has(w));
     });
+    // integrations
+    const slOn = $("#sl_on"); if (slOn) {
+      slOn.onchange = () => cfg.integrations.slack.enabled = slOn.checked;
+      document.querySelectorAll("[data-slev]").forEach(el => el.onchange = () => {
+        const v = new Set(cfg.integrations.slack.events); el.checked ? v.add(el.dataset.slev) : v.delete(el.dataset.slev);
+        cfg.integrations.slack.events = [...v];
+      });
+      document.querySelectorAll("[data-tron]").forEach(el => el.onchange = () => cfg.integrations[el.dataset.tron].enabled = el.checked);
+      document.querySelectorAll("[data-trf]").forEach(el => el.oninput = () => { const [p, k] = el.dataset.trf.split("."); cfg.integrations[p][k] = el.value.trim(); });
+      document.querySelectorAll("[data-secgo]").forEach(b => b.onclick = act(async () => {
+        const v = document.querySelector(`[data-secin="${b.dataset.secgo}"]`).value;
+        if (!v) return;
+        await api("/api/integrations/secret", { method: "PUT", body: { name: b.dataset.secgo, value: v } });
+        toast("Saved, encrypted"); await settings();
+      }));
+      document.querySelectorAll("[data-gen]").forEach(b => b.onclick = act(async () => {
+        const r = await api(`/api/integrations/${b.dataset.gen}/generate-secret`, { method: "POST" });
+        document.querySelector(`[data-genout="${b.dataset.gen}"]`).innerHTML = `<div class="secret"><b>Signing secret</b> <span class="muted">· ${esc(r.note)}</span><code class="mono">${esc(r.secret)}</code></div>`;
+      }));
+      $("#sl_test").onclick = act(async () => { await api("/api/integrations/slack/test", { method: "POST" }); toast("Test message sent to Slack"); });
+      $("#sl_prev").onclick = act(async () => { const r = await api("/api/digest/preview"); $("#sl_out").innerHTML = `<pre class="mono" style="font-size:12px;white-space:pre-wrap;color:var(--dim)">${esc(r.text)}</pre>`; });
+      $("#sl_send").onclick = act(async () => { await api("/api/digest", { method: "POST" }); toast("Digest queued"); });
+      $("#wh_add").onclick = () => {
+        const id = $("#wh_id").value.trim(), url = $("#wh_url").value.trim();
+        if (!id || !url) { toast("Give the webhook an id and a URL", true); return; }
+        cfg.integrations.webhooks.push({ id, url, events: Object.keys(intInfo.events) }); draw();
+      };
+      document.querySelectorAll("[data-whdel]").forEach(b => b.onclick = () => { cfg.integrations.webhooks.splice(+b.dataset.whdel, 1); draw(); });
+    }
     // stages
     document.querySelectorAll("[data-eadd]").forEach(el => el.onchange = () => { if (el.value) { cfg.stages[+el.dataset.eadd].engines.push(el.value); draw(); } });
     document.querySelectorAll("[data-edrop]").forEach(b => b.onclick = () => { const [i, j] = b.dataset.edrop.split(":").map(Number); cfg.stages[i].engines.splice(j, 1); draw(); });
@@ -861,6 +1086,7 @@ applyBrand();
   // which browsers never send to servers or put in logs.
   const frag = new URLSearchParams(location.hash.slice(1));
   if (frag.has("session") || frag.has("sso_error")) history.replaceState(null, "", location.pathname);
+  if (frag.get("dep")) { S.pendingDep = frag.get("dep"); history.replaceState(null, "", location.pathname); }
   if (frag.get("session")) return act(signIn)(frag.get("session"));
   if (frag.get("sso_error")) { renderSignIn(); return toast(frag.get("sso_error"), true); }
   S.token ? act(signIn)(S.token) : renderSignIn();

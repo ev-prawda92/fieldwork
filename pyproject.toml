@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fieldwork"
+version = "0.4.0"
+description = "The deployment engine for deployment teams: run every deployment, see why it stalls, prove what it delivered."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Evan Prawda", email = "evanprawda92@gmail.com" }]
+license = { file = "LICENSE.md" }
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "pyyaml>=6.0",
+    "cryptography>=42",
+    "pyjwt>=2.8",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1"]
+dev = ["pytest>=8.0", "psycopg[binary]>=3.1"]
+
+[project.scripts]
+fieldwork = "fieldwork.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["fieldwork*"]
+
+[tool.setuptools.package-data]
+fieldwork = ["static/*"]

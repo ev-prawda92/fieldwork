@@ -28,6 +28,7 @@ FIELD_TYPES = ("text", "number", "date", "select", "bool")
 BUILTIN_ENGINES = ("none", "sendero", "threshold",
                    "census", "cortex", "conformance", "golive", "attribution")
 WIDGETS = {
+    "today": "Today: what needs me",
     "kpis": "Headline numbers",
     "chain": "Deployments by stage",
     "my_tasks": "My open tasks",
@@ -37,7 +38,20 @@ WIDGETS = {
 
 # Actions whose "own" scope has no meaning (they aren't about one deployment).
 WORKSPACE_ACTIONS = {"deployment.create", "people.read", "people.manage", "audit.read",
-                     "audit.verify", "engine.manage", "config.edit"}
+                     "audit.verify", "engine.manage", "config.edit", "integrations.manage"}
+
+EVENTS = {
+    "task.assigned": "A task is assigned to someone",
+    "task.blocked": "A task is marked blocked",
+    "task.done": "A task is completed",
+    "finding.created": "An engine result is waiting for confirmation",
+    "finding.confirmed": "A finding is confirmed",
+    "finding.shared": "A finding is shared with the customer",
+    "deployment.advanced": "A deployment moves stage",
+    "deployment.health": "A deployment turns at risk or blocked",
+    "report.created": "A status report is drafted",
+}
+TRACKERS = ("github", "linear", "jira")
 
 ACTIONS = {
     "deployment.view":    "See deployments",
@@ -57,6 +71,8 @@ ACTIONS = {
     "task.view_internal": "See internal tasks (not just ones shared with the customer)",
     "finding.view_internal": "See internal findings (not just ones shared with the customer)",
     "customer.share":     "Share tasks and findings with the customer",
+    "report.create":      "Draft status reports",
+    "integrations.manage": "Connect Slack, webhooks, GitHub, Linear and Jira",
     "audit.read":         "Read the audit trail",
     "audit.verify":       "Verify the audit hash chain",
     "engine.manage":      "Register and manage engines (scripts and integrations)",
@@ -98,13 +114,15 @@ DEFAULT_CONFIG: dict = {
         "task.view_internal": {"head": "all", "engagement_manager": "own", **{r: "own" for r in DOERS}},
         "finding.view_internal": {"head": "all", "engagement_manager": "own", **{r: "own" for r in DOERS}},
         "customer.share":     {"head": "all", "engagement_manager": "own"},
+        "report.create":      {"head": "all", "engagement_manager": "own", **{r: "own" for r in DOERS}},
+        "integrations.manage": {"head": "all"},
     },
     "views": {
-        "head":                      ["kpis", "chain", "team", "findings"],
-        "engagement_manager":        ["kpis", "chain", "findings", "my_tasks", "team"],
-        "implementation_consultant": ["my_tasks", "chain"],
-        "fde":                       ["my_tasks", "chain"],
-        "ai_engineer":               ["my_tasks", "chain"],
+        "head":                      ["today", "kpis", "chain", "team", "findings"],
+        "engagement_manager":        ["today", "kpis", "chain", "findings", "team"],
+        "implementation_consultant": ["today", "my_tasks", "chain"],
+        "fde":                       ["today", "my_tasks", "chain"],
+        "ai_engineer":               ["today", "my_tasks", "chain"],
         "customer":                  ["chain"],
     },
     "stages": [
@@ -121,6 +139,14 @@ DEFAULT_CONFIG: dict = {
         {"key": "value",     "name": "Value",     "engines": ["attribution"],
          "exit_criteria": "Outcome measured and confirmed with the customer"},
     ],
+    "integrations": {
+        "slack": {"enabled": False, "events": ["task.blocked", "finding.created", "deployment.advanced",
+                                               "deployment.health", "report.created"]},
+        "webhooks": [],
+        "github": {"enabled": False, "api_base": "https://api.github.com"},
+        "linear": {"enabled": False, "api_base": "https://api.linear.app"},
+        "jira": {"enabled": False, "base_url": "", "email": ""},
+    },
     "sso": {"enabled": False, "issuer": "", "client_id": "", "allowed_domains": [],
             "jit_role": "", "required": False},
     "engines": [],   # customer-registered engines; see engines.py for shapes
@@ -183,6 +209,41 @@ def validate(cfg: dict, allow_http_engines: bool = False, known_urls: frozenset 
     if len(logo) > 200_000:
         raise ConfigError("branding.logo_url is too large (keep logos under ~150 KB)")
     out["branding"] = {"product_name": name, "accent": b["accent"].lower(), "logo_url": logo}
+
+    # integrations (secrets live in tenant_secrets, never here)
+    ints = upgrade({"integrations": cfg.get("integrations") or {}})["integrations"]
+    out["integrations"] = {}
+    sl = ints["slack"]
+    bad = [e for e in sl.get("events", []) if e not in EVENTS]
+    if bad:
+        raise ConfigError(f"integrations.slack.events: unknown event(s) {bad}")
+    out["integrations"]["slack"] = {"enabled": bool(sl.get("enabled")), "events": list(dict.fromkeys(sl.get("events", [])))}
+    hooks, hseen = [], set()
+    for h in ints.get("webhooks", []):
+        hid = _key(h.get("id"), "integrations.webhooks")
+        if hid in hseen:
+            raise ConfigError(f"integrations.webhooks: duplicate id {hid!r}")
+        hseen.add(hid)
+        url = str(h.get("url") or "").strip()
+        if not _url_ok(url, allow_http_engines):
+            raise ConfigError(f"integrations.webhooks.{hid}: url must be https")
+        evs = h.get("events") or list(EVENTS)
+        if [e for e in evs if e not in EVENTS]:
+            raise ConfigError(f"integrations.webhooks.{hid}: unknown event(s)")
+        hooks.append({"id": hid, "url": url, "events": list(dict.fromkeys(evs))})
+    out["integrations"]["webhooks"] = hooks
+    for t in ("github", "linear"):
+        v = ints[t]
+        api = str(v.get("api_base") or "").rstrip("/")
+        if not _url_ok(api, allow_http_engines):
+            raise ConfigError(f"integrations.{t}.api_base must be https")
+        out["integrations"][t] = {"enabled": bool(v.get("enabled")), "api_base": api}
+    j = ints["jira"]
+    jb = str(j.get("base_url") or "").rstrip("/")
+    if j.get("enabled") and not _url_ok(jb, allow_http_engines):
+        raise ConfigError("integrations.jira.base_url must be your https Atlassian site, e.g. https://yourco.atlassian.net")
+    out["integrations"]["jira"] = {"enabled": bool(j.get("enabled")), "base_url": jb,
+                                   "email": str(j.get("email") or "").strip()[:200]}
 
     # company sign-in (validated against roles below)
     sso = {**base["sso"], **(cfg.get("sso") or {})}
@@ -326,6 +387,8 @@ DERIVE = {
     "task.view_internal": "task.create",
     "finding.view_internal": "engine.run",
     "customer.share": "task.assign",
+    "report.create": "task.create",
+    "integrations.manage": "config.edit",
 }
 
 
@@ -338,6 +401,13 @@ def upgrade(cfg: dict) -> dict:
             src = DERIVE.get(action)
             perms[action] = dict(perms.get(src, {})) if src else {}
     cfg.setdefault("sso", default()["sso"])
+    base_int = default()["integrations"]
+    ints = cfg.setdefault("integrations", {})
+    for k, v in base_int.items():
+        if k not in ints:
+            ints[k] = copy.deepcopy(v)
+        elif isinstance(v, dict):
+            ints[k] = {**v, **ints[k]}
     for st in cfg.get("stages", []):
         if "engines" not in st:
             e = st.pop("engine", "none")

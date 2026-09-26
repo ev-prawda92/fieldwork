@@ -1,0 +1,182 @@
+Metadata-Version: 2.4
+Name: fieldwork
+Version: 0.4.0
+Summary: The deployment engine for deployment teams: run every deployment, see why it stalls, prove what it delivered.
+Author-email: Evan Prawda <evanprawda92@gmail.com>
+License: # License: not yet chosen
+        
+        Copyright (c) 2026 Operation Mincemeat LLC. All rights reserved until a license is chosen.
+        
+        Nothing in this repository is licensed for use by others yet. Before the
+        repository is made public, replace this file with one of:
+        
+        - **Recommended: Functional Source License (FSL-1.1-ALv2).** Anyone can use,
+          modify and self-host Fieldwork, including inside their company, but can't
+          offer it to others as a competing hosted service. Each release automatically
+          becomes Apache 2.0 two years later. Text: https://fsl.software
+        - **Apache License 2.0.** Fully open source, for the fastest adoption, but
+          anyone may also run it as a hosted service.
+        
+        Vendored engine cores (engines/sendero_core, threshold_core, cortex_core) come
+        from Operation Mincemeat LLC's own repositories; see ENGINES.md.
+        
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE.md
+Requires-Dist: fastapi>=0.110
+Requires-Dist: uvicorn>=0.29
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: cryptography>=42
+Requires-Dist: pyjwt>=2.8
+Requires-Dist: httpx>=0.27
+Provides-Extra: postgres
+Requires-Dist: psycopg[binary]>=3.1; extra == "postgres"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: psycopg[binary]>=3.1; extra == "dev"
+Dynamic: license-file
+
+# Fieldwork
+
+The platform deployment teams build their methodology on.
+
+Every software company that sells complex products has a deployment team:
+engagement managers, implementation consultants, forward-deployed engineers,
+AI engineers. Almost all of them run on tools they built themselves, because
+nothing on the market fits how they work.
+
+Fieldwork starts from one observation: **deployments work similarly enough
+across companies to ship a strong default, and differently enough that every
+team needs to make it its own.** So it ships a default template that works on
+day one, and lets each team change all of it:
+
+- **White-label it.** Their product name, accent color and logo.
+- **Their roles and access.** Define roles and grant each action at *all* scope (every deployment) or *own* scope (only deployments they're staffed on).
+- **Their views.** Choose what each role sees on its home screen.
+- **Their methodology.** Stages, exit criteria and custom fields.
+- **Their own scripts and integrations.** Plug them in as engines next to the built-ins.
+
+Fieldwork doesn't sell a methodology. It's the system of record teams build theirs on.
+
+## Run it
+
+```
+pip install -r requirements.txt
+python -m fieldwork seed
+FIELDWORK_DEMO=1 FIELDWORK_ALLOW_PRIVATE_ENGINES=1 python -m fieldwork serve
+```
+
+To let the demo's own webhook engine answer, run this in a second terminal:
+
+```
+FIELDWORK_ENGINE_SECRET=fws_demo_readiness_signing_secret python examples/engines/readiness_engine.py
+```
+
+Open http://127.0.0.1:8000 and sign in as anyone on the demo team. **Meridian
+AI** has white-labeled its workspace as "Meridian Deploy", added its own
+go-live readiness script next to the built-in command center, and runs a
+latency probe inside a customer's environment that pushes results in.
+
+**Postgres:** `docker compose up` runs Fieldwork on Postgres 16. Or point any
+command at a database with `--db postgresql://...` or `FIELDWORK_DATABASE_URL`.
+Schema changes are versioned migrations (`python -m fieldwork migrate`), and
+existing SQLite databases upgrade in place.
+
+```
+python -m pytest -q                                              # 53 tests on SQLite
+FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # the same tests on Postgres too (98)
+```
+
+## The default template
+
+| Role | Sees | Can |
+|---|---|---|
+| Head of Deployments | all deployments | everything, including settings, engines, people and company sign-in |
+| Engagement Manager | their engagements | open deployments, move stages freely, staff, assign, confirm findings, share with the customer, match bench |
+| Implementation Consultant, FDE, AI Engineer | deployments they're on | advance one stage, own tasks, run engines |
+| Customer Stakeholder | their own deployment, **shared items only** | read, and work tasks assigned to them |
+
+Stages: Discover → Integrate → Test → Go-live → Adopt → Value.
+
+Every row, stage and permission above is editable in Workspace settings.
+
+## Engines
+
+Engines do the diagnostic work at each stage. A stage can carry up to four.
+Their output becomes a **finding**, which someone other than the person who ran
+the engine has to confirm before it counts.
+
+| Stage | Built-in engine | What it decides |
+|---|---|---|
+| Discover | **Census** | Which systems in the inventory are ready, and which have ownership, access, documentation or data-control gaps. Writes the findings memo. |
+| Integrate | **Cortex authority check** | Runs the agent's delegated authority through Cortex's authorization engine (vendored unchanged) against expected scenarios, and flags risky grants such as write actions with no human gate. |
+| Test | **Conformance** | Pass rate by category against a bar; any critical miss fails the stage. |
+| Go-live | **Command center** | Whether it's safe to stand down: no open sev1, sev2 under a limit, new issues trending down. |
+| Adopt | **Sendero** | Whether a friction point is a BUILD problem or a TRAINING problem (two-level outlier test). |
+| Value | **Value attribution** | Value delivered against baseline, and every day of delay attributed to customer, vendor or third party. |
+| any | **Threshold** (bench) | Who can staff the deployment, gate by gate, with citations; never infers what it can't see. |
+
+All deterministic, with no model calls, and every conclusion traces back to input rows.
+
+**Customer-built engines** ([docs/ENGINE_PLUGINS.md](docs/ENGINE_PLUGINS.md)):
+- **Webhook:** Fieldwork calls the team's service with a signed request.
+- **Push:** the team's script, running anywhere (including behind a customer's firewall), posts results in with an engine token.
+
+## Sharing with the customer
+
+Tasks and findings are **internal** until someone with the "share with the
+customer" permission shares them. A finding has to be confirmed before it can
+be shared.
+
+Customer roles see only shared items, and can work the tasks assigned to them.
+Assigning a task to a customer shares it automatically; it can't be made
+internal again while they own it.
+
+## Company sign-in
+
+Each workspace connects its own identity provider: any OpenID Connect provider,
+including Okta, Microsoft Entra ID and Google Workspace. The flow is
+authorization code with PKCE. The ID token's signature is checked against the
+provider's published keys, along with issuer, audience, expiry, nonce, verified
+email and allowed domains. Sessions last 12 hours.
+
+Options:
+- **Just-in-time accounts:** create new people on first sign-in with a chosen role.
+- **Required mode:** personal access tokens stop working, except for people who can edit settings (break-glass access if the identity provider is down).
+
+## Guarantees (each is a test, on SQLite and Postgres)
+
+- **Tenant isolation.** No read, write, assignment, engine run, engine token or sign-in crosses workspaces. Another tenant's objects return 404, not 403.
+- **Scoped access from the customer's own permission map.** When a release adds a permission, existing workspaces inherit it from the closest existing one, so nobody silently gains or loses access.
+- **Customer-safe views.** Internal tasks and findings never reach customer roles, including through task counts or direct links.
+- **Tamper-evident audit.** Every write, including engine runs, engine pushes and sign-ins, appends to a per-tenant SHA-256 hash chain in the same transaction. On Postgres a per-tenant advisory lock keeps the chain linear across API processes. Editing any row is detected.
+- **Two-person confirmation** on every finding.
+- **Secrets encrypted at rest.** Webhook signing secrets and SSO client secrets use Fernet with rotatable keys (`FIELDWORK_SECRET_KEYS`, `python -m fieldwork rotate-keys`). Engine tokens and access tokens are stored only as hashes.
+- **Sign-in hardening.** State is single-use and expires in 10 minutes, PKCE is enforced, the nonce is checked, the key set is re-fetched when the provider rotates keys, and only asymmetric signing algorithms are accepted.
+- **Engine safety.** Webhook calls are signed, refuse redirects, cap response size and time out. In SaaS mode they must use https and can't reach private or cloud-metadata addresses.
+- **Settings can't break the workspace.** Strict validation. Roles people hold, stages with live deployments, and your own access to settings can't be removed.
+
+## Layout
+
+```
+fieldwork/app.py            API: sign-in, tenancy, scoped permissions, deployments, tasks, sharing, engines, audit
+fieldwork/config.py         workspace config: branding, roles, permissions, views, stages, engines, fields, SSO
+fieldwork/db.py             SQLite / Postgres adapter and versioned migrations
+fieldwork/sso.py            OpenID Connect sign-in
+fieldwork/crypto.py         encryption at rest and key rotation
+fieldwork/plugins.py        customer-built engines: signed webhook calls, push ingestion
+fieldwork/audit.py          hash-chained audit log
+fieldwork/engines/          stage engines, Sendero, Threshold, vendored Cortex core
+fieldwork/seed.py           demo workspace and sample inputs
+frontend/index.html         the console, one file, no build step
+examples/engines/           a webhook engine and a push engine to copy from
+tests/                      53 tests (98 with Postgres)
+```
+
+## Not built yet
+
+- SAML (OIDC covers most enterprise providers) and SCIM user provisioning.
+- A connection pool. Today it's one serialized connection per API process: correct, but not yet built for high concurrency.
+- Pinning the resolved IP for webhook and identity-provider calls, to close DNS-rebinding gaps in the address guard.
+- Notifications (email/Slack) when something is shared, assigned or blocked.
+- A managed KMS integration. Today keys arrive through `FIELDWORK_SECRET_KEYS` from whatever secret manager you run.

@@ -48,7 +48,11 @@ DEMO_LOGINS = [
 
 DEMO_ENGINE_SECRET = "fws_demo_readiness_signing_secret"
 DEMO_PUSH_TOKEN = "fwe_demo_latency_probe_token"
-DEMO_ENGINE_URL = "http://127.0.0.1:8787/"
+def demo_engine_url() -> str:
+    """Hosted demos call the copy of the engine the app serves itself; local demos call the example script."""
+    import os
+    pub = os.environ.get("FIELDWORK_PUBLIC_URL", "")
+    return pub.rstrip("/") + "/demo-engines/readiness" if pub.startswith("https://") else "http://127.0.0.1:8787/"
 
 READINESS_CHECKLIST = """[x] Cutover runbook signed off by customer IT
 [x] Rollback plan rehearsed
@@ -147,7 +151,7 @@ def meridian_config() -> dict:
         {"key": "readiness", "kind": "webhook", "name": "Go-live readiness check",
          "does": "Meridian's own cutover checklist scorer. Fails on any open blocker.",
          "input_hint": "One item per line: [x] done / [ ] open. Tag blockers with (blocker).",
-         "url": DEMO_ENGINE_URL},
+         "url": demo_engine_url()},
         {"key": "latency_probe", "kind": "push", "name": "Latency probe",
          "does": "Runs inside the customer's environment and posts agent latency against SLO."},
     ]
@@ -267,9 +271,9 @@ def northfield_adoption_csv(seed: int = 7) -> str:
     return "\n".join(lines)
 
 
-def seed(db_url: str) -> dict:
-    """Wipe the database at db_url and build the demo workspace."""
-    conn = db.connect(db_url)
+def seed(db_url) -> dict:
+    """Wipe the database (a URL/path, or an open db.DB) and build the demo workspace."""
+    conn = db_url if isinstance(db_url, db.DB) else db.connect(db_url)
     db.reset(conn)
     db.init(conn)
     ts = audit.now()

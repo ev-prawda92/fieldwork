@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fieldwork</title>
+<meta name="description" content="The deployment engine for deployment teams: run every deployment, see why it stalls, prove what it delivered.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0e1014;--panel:#12151a;--panel2:#171b21;--line:#252a32;--line2:#303642;--ink:#e8e6df;--dim:#9aa0a8;--faint:#6b717a;--accent:#e8b25c;--green:#7cc38b;--red:#e07a6f;--blue:#7fa8d9;--violet:#b39ddb}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 'IBM Plex Sans',system-ui,sans-serif}
+a{color:var(--accent)}
+.wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+.mono,code,pre{font-family:'IBM Plex Mono',ui-monospace,monospace}
+header{display:flex;align-items:center;gap:10px;padding:22px 0}
+header b{font-size:18px}
+header nav{margin-left:auto;display:flex;gap:18px;font-size:14px}
+header nav a{color:var(--dim);text-decoration:none}
+header nav a:hover{color:var(--ink)}
+.hero{padding:64px 0 48px;max-width:780px}
+h1{font-size:clamp(34px,5vw,52px);line-height:1.08;margin:0 0 18px;letter-spacing:-.5px}
+.lede{font-size:19px;color:var(--dim);margin:0 0 28px}
+.cta{display:flex;gap:12px;flex-wrap:wrap}
+.btn{display:inline-block;padding:11px 18px;border-radius:8px;text-decoration:none;font-weight:600;border:1px solid var(--line2);color:var(--ink)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#1a1307}
+section{padding:48px 0;border-top:1px solid var(--line)}
+h2{font-size:26px;margin:0 0 8px}
+.sub{color:var(--dim);margin:0 0 26px;max-width:720px}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+.card h3{margin:0 0 6px;font-size:16px}
+.card p{margin:0;color:var(--dim);font-size:14px}
+.stage{font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--violet);margin-bottom:6px}
+.chain{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 26px}
+.chain span{flex:1;min-width:110px;padding:10px 12px;border:1px solid var(--line2);border-radius:8px;font-size:14px;background:var(--panel)}
+.chain span small{display:block;color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.6px}
+.logos{display:flex;flex-wrap:wrap;gap:10px}
+.logos span{padding:7px 12px;border:1px solid var(--line2);border-radius:99px;font-size:14px;color:var(--dim)}
+pre{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;overflow-x:auto;font-size:13px;color:var(--dim)}
+pre b{color:var(--ink);font-weight:500}
+ul.checks{list-style:none;padding:0;margin:0;display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+ul.checks li{padding-left:22px;position:relative;color:var(--dim)}
+ul.checks li::before{content:"";position:absolute;left:0;top:.6em;width:8px;height:8px;border-radius:50%;background:var(--green)}
+ul.checks b{color:var(--ink);font-weight:600}
+footer{padding:36px 0 60px;color:var(--faint);font-size:13px;border-top:1px solid var(--line)}
+@media (max-width:640px){header nav{display:none}.hero{padding:36px 0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="#e8b25c" stroke-width="1.8" aria-hidden="true"><path d="M3 20 L9 8 L14 16 L18 10 L23 20"/><path d="M3 22 H23" stroke-opacity=".5"/></svg>
+    <b>Fieldwork</b>
+    <nav aria-label="Page"><a href="#engines">Engines</a><a href="#where">Integrations</a><a href="#yours">Make it yours</a><a href="#start">Get started</a><a href="/">Sign in</a></nav>
+  </header>
+
+  <div class="hero">
+    <h1>The deployment engine for deployment teams.</h1>
+    <p class="lede">Run every customer deployment, see why it stalls, and prove what it delivered. Built for the people who take software from signed contract to working in production: forward-deployed engineers, implementation consultants, AI engineers and engagement managers.</p>
+    <div class="cta"><a class="btn primary" href="/">Try the live demo</a><a class="btn" href="#start">Run it yourself</a></div>
+  </div>
+
+  <section>
+    <h2>Every deployment team builds this in-house. You shouldn't have to.</h2>
+    <p class="sub">Deployments run on a spreadsheet, a Slack channel and a tracker built for something else. Nobody can say why a go-live slipped or what the customer actually got. Fieldwork is the system of record underneath: your stages, your gates, your engines, one audit trail.</p>
+    <div class="chain" aria-label="Default deployment chain">
+      <span><small>1</small>Discover</span><span><small>2</small>Integrate</span><span><small>3</small>Test</span><span><small>4</small>Go-live</span><span><small>5</small>Adopt</span><span><small>6</small>Value</span>
+    </div>
+    <div class="grid">
+      <div class="card"><h3>Engines do the diagnosis</h3><p>Each stage runs engines that read real data and return a verdict you can trace line by line. No model guesses; deterministic checks.</p></div>
+      <div class="card"><h3>A second person confirms</h3><p>Every engine result is a finding that someone other than the person who ran it confirms before it counts.</p></div>
+      <div class="card"><h3>Share what's ready</h3><p>Tasks, findings and status reports stay internal until you share them. Customers see exactly what you choose.</p></div>
+      <div class="card"><h3>Everything on the record</h3><p>Every change, run, sign-in and sync is appended to a tamper-evident audit chain.</p></div>
+    </div>
+  </section>
+
+  <section id="engines">
+    <h2>Built-in engines</h2>
+    <p class="sub">Use them in the console, from an AI agent, or on a file from the command line.</p>
+    <div class="grid">
+      <div class="card"><div class="stage">Discover</div><h3>Census</h3><p>Finds ownership, access, documentation and data-control gaps in the systems inventory, and writes the findings memo.</p></div>
+      <div class="card"><div class="stage">Integrate</div><h3>Cortex authority check</h3><p>Tests an agent's delegated permissions against expected scenarios. Flags write access with no human gate.</p></div>
+      <div class="card"><div class="stage">Test</div><h3>Conformance</h3><p>Pass rate by category against your bar. Any critical miss fails the stage.</p></div>
+      <div class="card"><div class="stage">Go-live</div><h3>Command center</h3><p>Reads the issue log and decides whether it's safe to stand down.</p></div>
+      <div class="card"><div class="stage">Adopt</div><h3>Sendero</h3><p>Is the friction a build problem or a training problem? A two-level outlier test on per-user data says which, and routes it.</p></div>
+      <div class="card"><div class="stage">Value</div><h3>Value attribution</h3><p>Value delivered against baseline, and every day of delay attributed to customer, vendor or third party.</p></div>
+      <div class="card"><div class="stage">Staffing</div><h3>Threshold</h3><p>Who can staff this deployment, requirement by requirement, with citations. Never infers what it can't see.</p></div>
+      <div class="card"><div class="stage">Yours</div><h3>Your own engines</h3><p>Plug in the scripts you already have, as a signed webhook or a push from inside the customer's firewall.</p></div>
+    </div>
+  </section>
+
+  <section id="where">
+    <h2>Works where your team already works</h2>
+    <p class="sub">Two-way task sync, alerts and a morning digest, and an MCP server so your AI tools can read the deployment, create tasks and run engines. Each AI tool acts with its person's permissions, and everything it does is audited.</p>
+    <div class="logos" aria-label="Integrations">
+      <span>Slack</span><span>GitHub Issues</span><span>Linear</span><span>Jira</span><span>Signed webhooks</span>
+      <span>Claude</span><span>Cursor</span><span>Codex</span><span>OpenAI API</span><span>Gemini</span><span>Grok</span>
+    </div>
+  </section>
+
+  <section id="yours">
+    <h2>Your methodology, not ours</h2>
+    <p class="sub">Deployments work alike enough to ship a strong default, and differently enough that every team needs to change it. Start from the template and change all of it.</p>
+    <ul class="checks">
+      <li><b>White-label.</b> Your product name, color and logo.</li>
+      <li><b>Your roles.</b> Engagement managers, FDEs, consultants, customers. Access per deployment or workspace-wide.</li>
+      <li><b>Your stages.</b> Exit criteria and up to four engines per stage.</li>
+      <li><b>Your fields and home screens.</b> Per role.</li>
+      <li><b>Company sign-in.</b> Okta, Microsoft Entra ID, Google Workspace, any OpenID Connect provider.</li>
+      <li><b>Enterprise-ready.</b> Tenant isolation, encrypted secrets, Postgres, self-hostable.</li>
+    </ul>
+  </section>
+
+  <section id="start">
+    <h2>Get started</h2>
+    <p class="sub">Run an engine on a file in a minute, or run the whole platform.</p>
+<pre><b>pip install fieldwork</b>
+<b>fieldwork engines</b>                          # what's built in
+<b>fieldwork run census systems.csv</b>           # readiness gaps and a findings memo, no server needed
+<b>fieldwork seed</b>                             # demo workspace
+<b>FIELDWORK_DEMO=1 fieldwork serve</b>           # console at http://127.0.0.1:8000</pre>
+    <p class="sub">Connect an AI tool: create a personal access token in the console, then point your MCP client at <code>/mcp</code> with it.</p>
+  </section>
+
+  <footer>Fieldwork · Evan Prawda</footer>
+</div>
+</body>
+</html>

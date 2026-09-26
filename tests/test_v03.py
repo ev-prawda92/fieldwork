@@ -94,7 +94,7 @@ def test_upgrades_a_v02_database_in_place(tmp_path):
     raw.commit()
     raw.close()
     conn = db.connect(path)
-    assert db.migrate(conn) == [1, 2, 3]
+    assert db.migrate(conn) == [m[0] for m in db.MIGRATIONS]
     assert db.migrate(conn) == []
     assert conn.execute("SELECT name FROM users WHERE id='u1'").fetchone()["name"] == "A"
     cfg = config.upgrade(json.loads(conn.execute("SELECT config_json FROM tenants").fetchone()["config_json"]))
