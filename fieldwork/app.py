@@ -1,30 +1,34 @@
 """Fieldwork API.
 
-Every request is authenticated by bearer token, resolved to one user in one
-tenant. Every query is filtered by that tenant. Every write is recorded in the
-tenant's hash-chained audit trail inside the same transaction.
+Every request is authenticated (a personal access token, or a session from
+company sign-in), resolved to one person in one workspace. Every query is
+filtered by that workspace. Every write is recorded in the workspace's
+hash-chained audit trail inside the same transaction.
 
-Authorization reads the tenant's own permission map (config.py). Each grant
+Authorization reads the workspace's own permission map (config.py). Each grant
 has a scope: "all" (every deployment in the workspace) or "own" (only
 deployments the person is staffed on). Nothing about any role is hardcoded
-here; what an Engagement Manager or FDE may do is the customer's decision.
+here; what an Engagement Manager, FDE or customer may do is the customer's
+decision.
 """
 
 import hashlib
 import json
 import os
 import secrets
-import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from . import audit, config, db, engines, plugins
+from . import audit, config, crypto, db, engines, plugins, sso
+from .engines import stages
 
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
+VISIBILITY = ("internal", "shared")
 
 
 def token_hash(token: str) -> str:
@@ -43,15 +47,25 @@ def allow_private_engines() -> bool:
     return os.environ.get("FIELDWORK_ALLOW_PRIVATE_ENGINES") == "1"
 
 
+def demo_on() -> bool:
+    return os.environ.get("FIELDWORK_DEMO") == "1"
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 # ------------------------------------------------------------------ context
 
 class Ctx:
-    def __init__(self, conn: sqlite3.Connection, user: sqlite3.Row, tenant: sqlite3.Row):
+    def __init__(self, conn: db.DB, user, tenant, via: str = "token"):
         self.conn = conn
         self.user = user
         self.tenant_id = tenant["id"]
         self.tenant_name = tenant["name"]
-        self.cfg = json.loads(tenant["config_json"])
+        self.tenant_slug = tenant["slug"]
+        self.cfg = config.upgrade(json.loads(tenant["config_json"]))
+        self.via = via
 
     @property
     def uid(self) -> str:
@@ -65,7 +79,6 @@ class Ctx:
         return self.cfg["permissions"].get(action, {}).get(self.role)
 
     def can(self, action: str) -> bool:
-        """Has the permission at any scope."""
         return self.scope(action) is not None
 
     def is_member(self, dep_id: str) -> bool:
@@ -83,12 +96,11 @@ class Ctx:
 
     def require_on(self, action: str, dep_id: str) -> None:
         if not self.can_on(action, dep_id):
-            s = self.scope(action)
-            why = " on deployments you're not staffed on" if s == "own" else ""
+            why = " on deployments you're not staffed on" if self.scope(action) == "own" else ""
             raise HTTPException(403, f"your role can't {config.ACTIONS[action].lower()}{why}")
 
-    def deployment(self, dep_id: str) -> sqlite3.Row:
-        """Fetch a deployment this user may see, or 404 (never 403: don't leak existence)."""
+    def deployment(self, dep_id: str):
+        """Fetch a deployment this person may see, or 404 (never 403: don't leak existence)."""
         row = self.conn.execute("SELECT * FROM deployments WHERE id=? AND tenant_id=?",
                                 (dep_id, self.tenant_id)).fetchone()
         if not row or not self.can_on("deployment.view", dep_id):
@@ -104,40 +116,51 @@ def custom_engine(cfg: dict, key: str) -> dict | None:
 
 
 def engine_catalog(cfg: dict) -> dict:
-    cat = {k: {**v, "key": k, "builtin": True} for k, v in engines.REGISTRY.items()}
+    cat = {k: {**v, "key": k, "builtin": True, "kind": "stage" if k in stages.STAGE_ENGINES else "builtin"}
+           for k, v in engines.REGISTRY.items()}
     for e in cfg.get("engines", []):
         cat[e["key"]] = {**e, "status": "live", "builtin": False}
     return cat
 
 
-def create_app(db_file: str | None = None) -> FastAPI:
-    conn = db.connect(db_file)
+def create_app(db_url: str | None = None) -> FastAPI:
+    conn = db.connect(db_url)
     db.init(conn)
-    app = FastAPI(title="Fieldwork", version="0.2.0",
+    app = FastAPI(title="Fieldwork", version="0.3.0",
                   description="The platform deployment teams build their methodology on")
     app.state.conn = conn
+
+    def load_tenant(tid: str):
+        return conn.execute("SELECT * FROM tenants WHERE id=?", (tid,)).fetchone()
 
     def ctx(authorization: str = Header(default="")) -> Ctx:
         if not authorization.lower().startswith("bearer "):
             raise HTTPException(401, "missing bearer token")
         tok = authorization.split(" ", 1)[1].strip()
-        user = conn.execute("SELECT * FROM users WHERE token_hash=?", (token_hash(tok),)).fetchone()
+        th = token_hash(tok)
+        user = conn.execute("SELECT * FROM users WHERE token_hash=?", (th,)).fetchone()
+        via = "token"
         if not user:
-            raise HTTPException(401, "invalid token")
-        tenant = conn.execute("SELECT * FROM tenants WHERE id=?", (user["tenant_id"],)).fetchone()
-        return Ctx(conn, user, tenant)
+            s = conn.execute("SELECT * FROM sessions WHERE token_hash=?", (th,)).fetchone()
+            if not s or s["expires_at"] <= utcnow().isoformat():
+                raise HTTPException(401, "invalid or expired sign-in")
+            user = conn.execute("SELECT * FROM users WHERE id=?", (s["user_id"],)).fetchone()
+            via = "sso"
+            if not user:
+                raise HTTPException(401, "invalid sign-in")
+        c = Ctx(conn, user, load_tenant(user["tenant_id"]), via)
+        # When a workspace requires company sign-in, personal tokens only work
+        # for people who can edit settings (break-glass access if the IdP is down).
+        if via == "token" and c.cfg["sso"]["required"] and not c.can("config.edit"):
+            raise HTTPException(401, "this workspace requires company sign-in")
+        return c
 
-    @app.exception_handler(config.ConfigError)
-    async def _cfg_err(_: Request, exc: config.ConfigError):
-        return JSONResponse({"detail": str(exc)}, status_code=422)
-
-    @app.exception_handler(engines.EngineError)
-    async def _eng_err(_: Request, exc: engines.EngineError):
-        return JSONResponse({"detail": str(exc)}, status_code=422)
-
-    @app.exception_handler(plugins.PluginError)
-    async def _plug_err(_: Request, exc: plugins.PluginError):
-        return JSONResponse({"detail": str(exc)}, status_code=502)
+    for exc_type, code in ((config.ConfigError, 422), (engines.EngineError, 422),
+                           (stages.StageEngineError, 422), (plugins.PluginError, 502),
+                           (crypto.SecretError, 500)):
+        def _handler(_: Request, exc, code=code):
+            return JSONResponse({"detail": str(exc)}, status_code=code)
+        app.add_exception_handler(exc_type, _handler)
 
     # --------------------------------------------------------------- shell
 
@@ -147,42 +170,159 @@ def create_app(db_file: str | None = None) -> FastAPI:
 
     @app.get("/api/health")
     def health():
-        return {"ok": True}
+        return {"ok": True, "database": conn.dialect, "dev_encryption_key": crypto.using_dev_key()}
 
     @app.get("/api/demo")
     def demo_logins():
         """Sign-in shortcuts for the demo workspace. Off unless FIELDWORK_DEMO=1."""
-        if os.environ.get("FIELDWORK_DEMO") != "1":
+        if not demo_on():
             raise HTTPException(404, "not found")
         from .seed import DEMO_LOGINS
         return DEMO_LOGINS
 
     @app.get("/api/demo/sample-csv")
     def demo_csv():
-        if os.environ.get("FIELDWORK_DEMO") != "1":
+        if not demo_on():
             raise HTTPException(404, "not found")
         from .seed import northfield_adoption_csv
         return {"csv": northfield_adoption_csv(), "metric": "minutes_per_exception", "baseline": 6}
 
     @app.get("/api/demo/sample-input/{engine_key}")
     def demo_input(engine_key: str):
-        if os.environ.get("FIELDWORK_DEMO") != "1":
+        if not demo_on():
             raise HTTPException(404, "not found")
-        from .seed import READINESS_CHECKLIST
-        if engine_key != "readiness":
+        from .seed import SAMPLE_INPUTS
+        if engine_key not in SAMPLE_INPUTS:
             raise HTTPException(404, "no sample for this engine")
-        return {"input": READINESS_CHECKLIST}
+        return {"input": SAMPLE_INPUTS[engine_key]}
 
     @app.get("/api/me")
     def me(c: Ctx = Depends(ctx)):
         return {
             "user": {"id": c.uid, "name": c.user["name"], "email": c.user["email"], "role": c.role,
                      "role_name": config.role_name(c.cfg, c.role)},
-            "tenant": {"id": c.tenant_id, "name": c.tenant_name},
+            "tenant": {"id": c.tenant_id, "name": c.tenant_name, "slug": c.tenant_slug},
             "branding": c.cfg["branding"],
             "can": {a: c.scope(a) for a in config.ACTIONS if c.can(a)},
             "home": c.cfg["views"].get(c.role, []),
+            "signed_in_via": c.via,
         }
+
+    # ------------------------------------------------------ company sign-in
+
+    @app.get("/api/auth/workspace/{slug}")
+    def workspace_info(slug: str):
+        """Public: what the sign-in page needs to show for a workspace."""
+        t = conn.execute("SELECT * FROM tenants WHERE slug=?", (slug,)).fetchone()
+        if not t:
+            raise HTTPException(404, "workspace not found")
+        cfg = config.upgrade(json.loads(t["config_json"]))
+        return {"name": t["name"], "branding": cfg["branding"], "sso": cfg["sso"]["enabled"],
+                "sso_required": cfg["sso"]["required"]}
+
+    @app.get("/auth/sso/{slug}/start", include_in_schema=False)
+    def sso_start(slug: str):
+        t = conn.execute("SELECT * FROM tenants WHERE slug=?", (slug,)).fetchone()
+        if not t:
+            raise HTTPException(404, "workspace not found")
+        cfg = config.upgrade(json.loads(t["config_json"]))
+        if not cfg["sso"]["enabled"]:
+            raise HTTPException(409, "company sign-in isn't set up for this workspace")
+        state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
+        verifier, challenge = sso.pkce_pair()
+        try:
+            url = sso.authorize_url(cfg["sso"], state, nonce, challenge)
+        except sso.SSOError as e:
+            raise HTTPException(502, str(e))
+        with db.tx(conn):
+            conn.execute("DELETE FROM sso_states WHERE created_at < ?",
+                         ((utcnow() - timedelta(seconds=sso.STATE_TTL_S)).isoformat(),))
+            conn.execute("INSERT INTO sso_states (state, tenant_id, nonce, code_verifier, created_at)"
+                         " VALUES (?,?,?,?,?)", (state, t["id"], nonce, verifier, utcnow().isoformat()))
+        return RedirectResponse(url, status_code=302)
+
+    @app.get("/auth/sso/callback", include_in_schema=False)
+    def sso_callback(state: str = "", code: str = "", error: str = "", error_description: str = ""):
+        def fail(msg: str):
+            from urllib.parse import quote
+            return RedirectResponse(f"/#sso_error={quote(msg)}", status_code=302)
+
+        if error:
+            return fail(error_description or error)
+        with db.tx(conn):
+            st = conn.execute("SELECT * FROM sso_states WHERE state=?", (state,)).fetchone()
+            if st:
+                conn.execute("DELETE FROM sso_states WHERE state=?", (state,))  # single use
+        if not st or st["created_at"] < (utcnow() - timedelta(seconds=sso.STATE_TTL_S)).isoformat():
+            return fail("sign-in expired or was already used; start again")
+        t = load_tenant(st["tenant_id"])
+        cfg = config.upgrade(json.loads(t["config_json"]))
+        secret_row = conn.execute("SELECT secret FROM tenant_secrets WHERE tenant_id=? AND name='sso_client_secret'",
+                                  (t["id"],)).fetchone()
+        if not secret_row:
+            return fail("company sign-in is missing its client secret")
+        try:
+            id_token = sso.exchange(cfg["sso"], crypto.decrypt(secret_row["secret"]), code, st["code_verifier"])
+            claims = sso.verify_id_token(cfg["sso"], id_token, st["nonce"])
+        except sso.SSOError as e:
+            return fail(str(e))
+        user = conn.execute("SELECT * FROM users WHERE tenant_id=? AND lower(email)=?",
+                            (t["id"], claims["email"])).fetchone()
+        tmp_actor = "sso:" + claims["email"]
+        with db.tx(conn):
+            if not user:
+                role = cfg["sso"]["jit_role"]
+                if not role:
+                    audit.record(conn, t["id"], tmp_actor, "auth.sso_denied", claims["email"],
+                                 {"reason": "no account and just-in-time access is off"})
+                    return fail("you don't have an account in this workspace yet; ask an admin to add you")
+                uid = new_id("usr")
+                name = claims.get("name") or claims["email"].split("@")[0]
+                conn.execute("INSERT INTO users (id, tenant_id, name, email, role, manager_id, token_hash,"
+                             " profile_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                             (uid, t["id"], name, claims["email"], role, None,
+                              token_hash("disabled:" + secrets.token_hex(16)), "{}", utcnow().isoformat()))
+                audit.record(conn, t["id"], tmp_actor, "people.add", uid,
+                             {"name": name, "role": role, "via": "sso just-in-time"})
+                user = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+            tok = "fwsess_" + secrets.token_urlsafe(32)
+            conn.execute("INSERT INTO sessions (token_hash, user_id, tenant_id, method, created_at, expires_at)"
+                         " VALUES (?,?,?,?,?,?)",
+                         (token_hash(tok), user["id"], t["id"], "oidc", utcnow().isoformat(),
+                          (utcnow() + timedelta(hours=sso.SESSION_HOURS)).isoformat()))
+            audit.record(conn, t["id"], user["id"], "auth.sso_login", user["id"],
+                         {"issuer": claims["iss"], "subject": claims["sub"]})
+        return RedirectResponse(f"/#session={tok}", status_code=302)
+
+    @app.post("/api/auth/logout")
+    def logout(authorization: str = Header(default="")):
+        tok = authorization.split(" ", 1)[1].strip() if " " in authorization else ""
+        with db.tx(conn):
+            conn.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash(tok),))
+        return {"ok": True}
+
+    class SecretIn(BaseModel):
+        client_secret: str = Field(min_length=1, max_length=2000)
+
+    @app.put("/api/sso/secret")
+    def set_sso_secret(body: SecretIn, c: Ctx = Depends(ctx)):
+        c.require("config.edit")
+        with db.tx(conn):
+            conn.execute("INSERT INTO tenant_secrets (tenant_id, name, secret, created_at) VALUES (?,?,?,?)"
+                         " ON CONFLICT (tenant_id, name) DO UPDATE SET secret=excluded.secret,"
+                         " created_at=excluded.created_at",
+                         (c.tenant_id, "sso_client_secret", crypto.encrypt(body.client_secret),
+                          utcnow().isoformat()))
+            c.log("sso.secret_set", c.tenant_id, {})
+        return {"ok": True}
+
+    @app.get("/api/sso")
+    def sso_status(c: Ctx = Depends(ctx)):
+        c.require("config.edit")
+        has = conn.execute("SELECT 1 FROM tenant_secrets WHERE tenant_id=? AND name='sso_client_secret'",
+                           (c.tenant_id,)).fetchone() is not None
+        return {"config": c.cfg["sso"], "client_secret_set": has, "redirect_uri": sso.redirect_uri(),
+                "start_url": f"{sso.public_url()}/auth/sso/{c.tenant_slug}/start"}
 
     # -------------------------------------------------------------- config
 
@@ -195,35 +335,36 @@ def create_app(db_file: str | None = None) -> FastAPI:
     @app.put("/api/config")
     def put_config(body: dict, c: Ctx = Depends(ctx)):
         c.require("config.edit")
-        new = config.validate(body, allow_http_engines=allow_private_engines(),
+        new = config.validate(body, allow_http_engines=allow_private_engines() or sso.allow_insecure(),
                               known_urls=frozenset(e.get("url") for e in c.cfg.get("engines", [])))
-        # Custom engines are managed through /api/engines, not here.
-        if [e["key"] for e in new["engines"]] != [e["key"] for e in c.cfg.get("engines", [])] or \
-                any(e != o for e, o in zip(new["engines"], c.cfg.get("engines", []))):
+        if new["engines"] != c.cfg.get("engines", []):
             c.require("engine.manage")
         if new["permissions"]["config.edit"].get(c.role) != "all":
             raise HTTPException(422, "you'd lose access to settings; keep config.edit on your own role")
+        if new["sso"]["required"] and not conn.execute(
+                "SELECT 1 FROM tenant_secrets WHERE tenant_id=? AND name='sso_client_secret'",
+                (c.tenant_id,)).fetchone():
+            raise HTTPException(422, "set the SSO client secret before requiring company sign-in")
         role_keys = {r["key"] for r in new["roles"]}
         in_use = {r["role"] for r in conn.execute(
-            "SELECT DISTINCT role FROM users WHERE tenant_id=?", (c.tenant_id,)).fetchall()}
+            "SELECT DISTINCT role FROM users WHERE tenant_id=?", (c.tenant_id,))}
         if in_use - role_keys:
             raise HTTPException(409, f"people still hold role(s): {', '.join(sorted(in_use - role_keys))}; "
                                      "move them first")
-        keys = set(config.stage_keys(new))
         live = {r["stage"] for r in conn.execute(
-            "SELECT DISTINCT stage FROM deployments WHERE tenant_id=?", (c.tenant_id,)).fetchall()}
+            "SELECT DISTINCT stage FROM deployments WHERE tenant_id=?", (c.tenant_id,))}
+        keys = set(config.stage_keys(new))
         if live - keys:
             raise HTTPException(409, f"can't remove stage(s) with live deployments: {', '.join(sorted(live - keys))}")
         removed_engines = {e["key"] for e in c.cfg.get("engines", [])} - {e["key"] for e in new["engines"]}
         with db.tx(conn):
             conn.execute("UPDATE tenants SET config_json=? WHERE id=?", (json.dumps(new), c.tenant_id))
             for k in removed_engines:
-                conn.execute("DELETE FROM engine_credentials WHERE tenant_id=? AND engine_key=?",
-                             (c.tenant_id, k))
+                conn.execute("DELETE FROM engine_credentials WHERE tenant_id=? AND engine_key=?", (c.tenant_id, k))
             c.log("config.update", c.tenant_id, {
                 "roles": sorted(role_keys), "stages": config.stage_keys(new),
-                "branding": new["branding"]["product_name"],
-                "engines_removed": sorted(removed_engines)})
+                "branding": new["branding"]["product_name"], "sso": new["sso"]["enabled"],
+                "sso_required": new["sso"]["required"], "engines_removed": sorted(removed_engines)})
         return {"config": new}
 
     # -------------------------------------------------------------- people
@@ -235,8 +376,7 @@ def create_app(db_file: str | None = None) -> FastAPI:
             """SELECT u.id, u.name, u.email, u.role,
                       (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id=u.id AND t.status!='done') open_tasks,
                       (SELECT COUNT(*) FROM deployment_members m WHERE m.user_id=u.id) deployments
-               FROM users u WHERE u.tenant_id=? ORDER BY u.name""",
-            (c.tenant_id,)).fetchall()
+               FROM users u WHERE u.tenant_id=? ORDER BY u.name""", (c.tenant_id,)).fetchall()
         return [{**dict(r), "role_name": config.role_name(c.cfg, r["role"])} for r in rows]
 
     class PersonIn(BaseModel):
@@ -249,14 +389,20 @@ def create_app(db_file: str | None = None) -> FastAPI:
         c.require("people.manage")
         if body.role not in {r["key"] for r in c.cfg["roles"]}:
             raise HTTPException(422, f"unknown role {body.role!r}")
+        if conn.execute("SELECT 1 FROM users WHERE tenant_id=? AND lower(email)=?",
+                        (c.tenant_id, body.email.strip().lower())).fetchone():
+            raise HTTPException(409, "someone with that email is already in the workspace")
         uid = new_id("usr")
         tok = "fwu_" + secrets.token_urlsafe(24)
         with db.tx(conn):
-            conn.execute("INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?)",
-                         (uid, c.tenant_id, body.name, body.email, body.role, None,
+            conn.execute("INSERT INTO users (id, tenant_id, name, email, role, manager_id, token_hash,"
+                         " profile_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                         (uid, c.tenant_id, body.name, body.email.strip(), body.role, None,
                           token_hash(tok), "{}", audit.now()))
             c.log("people.add", uid, {"name": body.name, "role": body.role})
-        return {"id": uid, "token": tok, "note": "shown once; share it with them securely"}
+        note = ("shown once; share it securely" if not c.cfg["sso"]["required"]
+                else "this workspace requires company sign-in, so they'll sign in through your identity provider")
+        return {"id": uid, "token": tok, "note": note}
 
     class PersonPatch(BaseModel):
         role: str
@@ -291,8 +437,7 @@ def create_app(db_file: str | None = None) -> FastAPI:
                 " JOIN deployment_members m ON m.deployment_id=d.id"
                 " WHERE cu.tenant_id=? AND m.user_id=? ORDER BY cu.name", (c.tenant_id, c.uid)).fetchall()
         else:
-            rows = conn.execute("SELECT * FROM customers WHERE tenant_id=? ORDER BY name",
-                                (c.tenant_id,)).fetchall()
+            rows = conn.execute("SELECT * FROM customers WHERE tenant_id=? ORDER BY name", (c.tenant_id,)).fetchall()
         return [{**dict(r), "fields": jloads(r["fields_json"])} for r in rows]
 
     @app.post("/api/customers", status_code=201)
@@ -301,31 +446,33 @@ def create_app(db_file: str | None = None) -> FastAPI:
         fields = config.check_fields(c.cfg, "customer", body.fields)
         cid = new_id("cus")
         with db.tx(conn):
-            conn.execute("INSERT INTO customers VALUES (?,?,?,?,?,?)",
+            conn.execute("INSERT INTO customers (id, tenant_id, name, industry, fields_json, created_at)"
+                         " VALUES (?,?,?,?,?,?)",
                          (cid, c.tenant_id, body.name, body.industry, json.dumps(fields), audit.now()))
             c.log("customer.create", cid, {"name": body.name})
         return {"id": cid}
 
     # --------------------------------------------------------- deployments
 
-    def dep_out(r: sqlite3.Row) -> dict:
+    def dep_out(r, c: Ctx) -> dict:
         members = conn.execute(
             "SELECT u.id, u.name, u.role FROM deployment_members m JOIN users u ON u.id=m.user_id"
             " WHERE m.deployment_id=? ORDER BY u.name", (r["id"],)).fetchall()
         cust = conn.execute("SELECT name FROM customers WHERE id=?", (r["customer_id"],)).fetchone()
-        counts = conn.execute(
-            "SELECT status, COUNT(*) n FROM tasks WHERE deployment_id=? GROUP BY status",
-            (r["id"],)).fetchall()
+        vis = "" if c.can_on("task.view_internal", r["id"]) else " AND visibility='shared'"
+        counts = conn.execute(f"SELECT status, COUNT(*) n FROM tasks WHERE deployment_id=?{vis} GROUP BY status",
+                              (r["id"],)).fetchall()
         return {
             "id": r["id"], "name": r["name"], "customer_id": r["customer_id"],
             "customer": cust["name"] if cust else "", "stage": r["stage"], "health": r["health"],
             "lead_id": r["lead_id"], "fields": jloads(r["fields_json"]),
-            "staffing_req": r["staffing_req"], "members": [dict(m) for m in members],
+            "staffing_req": r["staffing_req"] if c.can_on("bench.match", r["id"]) else "",
+            "members": [dict(m) for m in members],
             "tasks": {x["status"]: x["n"] for x in counts},
             "updated_at": r["updated_at"],
         }
 
-    def visible_deployments(c: Ctx) -> list[sqlite3.Row]:
+    def visible_deployments(c: Ctx) -> list:
         s = c.scope("deployment.view")
         if s == "all":
             return conn.execute("SELECT * FROM deployments WHERE tenant_id=? ORDER BY updated_at DESC",
@@ -339,7 +486,7 @@ def create_app(db_file: str | None = None) -> FastAPI:
 
     @app.get("/api/deployments")
     def deployments(c: Ctx = Depends(ctx)):
-        return [dep_out(r) for r in visible_deployments(c)]
+        return [dep_out(r, c) for r in visible_deployments(c)]
 
     class DeploymentIn(BaseModel):
         customer_id: str
@@ -348,11 +495,15 @@ def create_app(db_file: str | None = None) -> FastAPI:
         fields: dict = {}
         staffing_req: str = ""
 
-    def tenant_user(c: Ctx, uid: str) -> sqlite3.Row:
+    def tenant_user(c: Ctx, uid: str):
         u = conn.execute("SELECT * FROM users WHERE id=? AND tenant_id=?", (uid, c.tenant_id)).fetchone()
         if not u:
             raise HTTPException(422, f"no such person in this workspace: {uid}")
         return u
+
+    def add_stage_event(c: Ctx, dep_id: str, frm, to: str, note: str, ts: str) -> None:
+        conn.execute("INSERT INTO stage_events (tenant_id, deployment_id, from_stage, to_stage, actor_id, note, at)"
+                     " VALUES (?,?,?,?,?,?,?)", (c.tenant_id, dep_id, frm, to, c.uid, note, ts))
 
     @app.post("/api/deployments", status_code=201)
     def add_deployment(body: DeploymentIn, c: Ctx = Depends(ctx)):
@@ -367,26 +518,24 @@ def create_app(db_file: str | None = None) -> FastAPI:
         first = c.cfg["stages"][0]["key"]
         ts = audit.now()
         with db.tx(conn):
-            conn.execute("INSERT INTO deployments VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            conn.execute("INSERT INTO deployments (id, tenant_id, customer_id, name, stage, health, lead_id,"
+                         " fields_json, staffing_req, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                          (did, c.tenant_id, body.customer_id, body.name, first, "on_track",
                           body.lead_id, json.dumps(fields), body.staffing_req, ts, ts))
-            # The creator is staffed on it too, so "own"-scoped creators can run it.
-            for uid in {body.lead_id, c.uid} - {None}:
-                conn.execute("INSERT OR IGNORE INTO deployment_members VALUES (?,?)", (did, uid))
-            conn.execute("INSERT INTO stage_events (tenant_id, deployment_id, from_stage, to_stage,"
-                         " actor_id, note, at) VALUES (?,?,?,?,?,?,?)",
-                         (c.tenant_id, did, None, first, c.uid, "opened", ts))
+            for uid in sorted({body.lead_id, c.uid} - {None}):
+                conn.execute("INSERT INTO deployment_members (deployment_id, user_id) VALUES (?,?)"
+                             " ON CONFLICT DO NOTHING", (did, uid))
+            add_stage_event(c, did, None, first, "opened", ts)
             c.log("deployment.create", did, {"name": body.name, "stage": first})
         return {"id": did}
 
     @app.get("/api/deployments/{dep_id}")
     def deployment(dep_id: str, c: Ctx = Depends(ctx)):
         r = c.deployment(dep_id)
-        out = dep_out(r)
+        out = dep_out(r, c)
         out["history"] = [dict(e) for e in conn.execute(
             "SELECT e.from_stage, e.to_stage, e.note, e.at, u.name actor FROM stage_events e"
-            " JOIN users u ON u.id=e.actor_id WHERE e.deployment_id=? ORDER BY e.id",
-            (dep_id,)).fetchall()]
+            " JOIN users u ON u.id=e.actor_id WHERE e.deployment_id=? ORDER BY e.id", (dep_id,))]
         out["you_can"] = sorted(a for a in config.ACTIONS
                                 if a not in config.WORKSPACE_ACTIONS and c.can_on(a, dep_id))
         return out
@@ -411,13 +560,9 @@ def create_app(db_file: str | None = None) -> FastAPI:
             raise HTTPException(422, "moving a deployment backward needs a note")
         ts = audit.now()
         with db.tx(conn):
-            conn.execute("UPDATE deployments SET stage=?, updated_at=? WHERE id=?",
-                         (body.to_stage, ts, dep_id))
-            conn.execute("INSERT INTO stage_events (tenant_id, deployment_id, from_stage, to_stage,"
-                         " actor_id, note, at) VALUES (?,?,?,?,?,?,?)",
-                         (c.tenant_id, dep_id, r["stage"], body.to_stage, c.uid, body.note, ts))
-            c.log("deployment.advance", dep_id,
-                  {"from": r["stage"], "to": body.to_stage, "note": body.note})
+            conn.execute("UPDATE deployments SET stage=?, updated_at=? WHERE id=?", (body.to_stage, ts, dep_id))
+            add_stage_event(c, dep_id, r["stage"], body.to_stage, body.note, ts)
+            c.log("deployment.advance", dep_id, {"from": r["stage"], "to": body.to_stage, "note": body.note})
         return {"stage": body.to_stage}
 
     class PatchDeployment(BaseModel):
@@ -462,7 +607,8 @@ def create_app(db_file: str | None = None) -> FastAPI:
         c.require_on("deployment.staff", dep_id)
         tenant_user(c, body.user_id)
         with db.tx(conn):
-            conn.execute("INSERT OR IGNORE INTO deployment_members VALUES (?,?)", (dep_id, body.user_id))
+            conn.execute("INSERT INTO deployment_members (deployment_id, user_id) VALUES (?,?)"
+                         " ON CONFLICT DO NOTHING", (dep_id, body.user_id))
             c.log("deployment.staff", dep_id, {"added": body.user_id})
         return {"ok": True}
 
@@ -471,14 +617,13 @@ def create_app(db_file: str | None = None) -> FastAPI:
         c.deployment(dep_id)
         c.require_on("deployment.staff", dep_id)
         with db.tx(conn):
-            conn.execute("DELETE FROM deployment_members WHERE deployment_id=? AND user_id=?",
-                         (dep_id, user_id))
+            conn.execute("DELETE FROM deployment_members WHERE deployment_id=? AND user_id=?", (dep_id, user_id))
             c.log("deployment.staff", dep_id, {"removed": user_id})
         return {"ok": True}
 
     # --------------------------------------------------------------- tasks
 
-    def task_out(r: sqlite3.Row) -> dict:
+    def task_out(r) -> dict:
         d = dict(r)
         who = conn.execute("SELECT name FROM users WHERE id=?", (r["assignee_id"],)).fetchone() \
             if r["assignee_id"] else None
@@ -487,16 +632,33 @@ def create_app(db_file: str | None = None) -> FastAPI:
         d["deployment"] = dep["name"] if dep else ""
         return d
 
+    def sees_internal_tasks(c: Ctx, user_role: str, dep_id: str, user_id: str) -> bool:
+        """Would this person (not necessarily the caller) see internal tasks on dep?"""
+        s = c.cfg["permissions"].get("task.view_internal", {}).get(user_role)
+        if s == "all":
+            return True
+        return s == "own" and conn.execute(
+            "SELECT 1 FROM deployment_members WHERE deployment_id=? AND user_id=?",
+            (dep_id, user_id)).fetchone() is not None
+
     @app.get("/api/tasks")
     def tasks(mine: bool = False, deployment_id: str | None = None, c: Ctx = Depends(ctx)):
-        visible = [r["id"] for r in visible_deployments(c)]
+        deps = [r["id"] for r in visible_deployments(c)]
         if deployment_id:
             c.deployment(deployment_id)
-            visible = [deployment_id]
-        if not visible:
+            deps = [deployment_id]
+        if not deps:
             return []
-        q = f"SELECT * FROM tasks WHERE tenant_id=? AND deployment_id IN ({','.join('?' * len(visible))})"
-        args: list = [c.tenant_id, *visible]
+        internal = [d for d in deps if c.can_on("task.view_internal", d)]
+        shared_only = [d for d in deps if d not in internal]
+        clauses, args = [], [c.tenant_id]
+        if internal:
+            clauses.append(f"deployment_id IN ({','.join('?' * len(internal))})")
+            args += internal
+        if shared_only:
+            clauses.append(f"(deployment_id IN ({','.join('?' * len(shared_only))}) AND visibility='shared')")
+            args += shared_only
+        q = f"SELECT * FROM tasks WHERE tenant_id=? AND ({' OR '.join(clauses)})"
         if mine:
             q += " AND assignee_id=?"
             args.append(c.uid)
@@ -510,40 +672,51 @@ def create_app(db_file: str | None = None) -> FastAPI:
         stage: str | None = None
         assignee_id: str | None = None
         due: str | None = None
+        visibility: str = "internal"
 
     @app.post("/api/tasks", status_code=201)
     def add_task(body: TaskIn, c: Ctx = Depends(ctx)):
         dep = c.deployment(body.deployment_id)
         c.require_on("task.create", body.deployment_id)
+        if body.visibility not in VISIBILITY:
+            raise HTTPException(422, "visibility must be internal or shared")
         assignee = body.assignee_id or c.uid
         if assignee != c.uid:
             c.require_on("task.assign", body.deployment_id)
-        tenant_user(c, assignee)
+        a = tenant_user(c, assignee)
+        visibility = body.visibility
+        if not sees_internal_tasks(c, a["role"], body.deployment_id, assignee):
+            visibility = "shared"  # a task for the customer has to be one they can see
+        if visibility == "shared":
+            c.require_on("customer.share", body.deployment_id)
         stage = body.stage or dep["stage"]
         if stage not in config.stage_keys(c.cfg):
             raise HTTPException(422, f"unknown stage {stage!r}")
         tid = new_id("tsk")
         ts = audit.now()
         with db.tx(conn):
-            conn.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            conn.execute("INSERT INTO tasks (id, tenant_id, deployment_id, stage, title, assignee_id, status,"
+                         " due, created_by, created_at, updated_at, visibility) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                          (tid, c.tenant_id, body.deployment_id, stage, body.title, assignee,
-                          "open", body.due, c.uid, ts, ts))
+                          "open", body.due, c.uid, ts, ts, visibility))
             c.log("task.create", tid, {"deployment": body.deployment_id, "assignee": assignee,
-                                       "title": body.title})
-        return {"id": tid}
+                                       "title": body.title, "visibility": visibility})
+        return {"id": tid, "visibility": visibility}
 
     class TaskPatch(BaseModel):
         status: str | None = None
         assignee_id: str | None = None
         due: str | None = None
+        visibility: str | None = None
 
     @app.patch("/api/tasks/{task_id}")
     def patch_task(task_id: str, body: TaskPatch, c: Ctx = Depends(ctx)):
-        t = conn.execute("SELECT * FROM tasks WHERE id=? AND tenant_id=?",
-                         (task_id, c.tenant_id)).fetchone()
+        t = conn.execute("SELECT * FROM tasks WHERE id=? AND tenant_id=?", (task_id, c.tenant_id)).fetchone()
         if not t:
             raise HTTPException(404, "task not found")
         c.deployment(t["deployment_id"])
+        if t["visibility"] != "shared" and not c.can_on("task.view_internal", t["deployment_id"]):
+            raise HTTPException(404, "task not found")
         if t["assignee_id"] != c.uid:
             c.require_on("task.update_any", t["deployment_id"])
         changes: dict = {}
@@ -553,10 +726,21 @@ def create_app(db_file: str | None = None) -> FastAPI:
             changes["status"] = body.status
         if body.assignee_id is not None:
             c.require_on("task.assign", t["deployment_id"])
-            tenant_user(c, body.assignee_id)
+            a = tenant_user(c, body.assignee_id)
+            if t["visibility"] != "shared" and not sees_internal_tasks(c, a["role"], t["deployment_id"], a["id"]):
+                raise HTTPException(422, "share the task with the customer before assigning it to them")
             changes["assignee_id"] = body.assignee_id
         if body.due is not None:
             changes["due"] = body.due or None
+        if body.visibility is not None:
+            if body.visibility not in VISIBILITY:
+                raise HTTPException(422, "visibility must be internal or shared")
+            c.require_on("customer.share", t["deployment_id"])
+            if body.visibility == "internal" and t["assignee_id"]:
+                a = conn.execute("SELECT * FROM users WHERE id=?", (t["assignee_id"],)).fetchone()
+                if a and not sees_internal_tasks(c, a["role"], t["deployment_id"], a["id"]):
+                    raise HTTPException(422, "it's assigned to someone who only sees shared tasks")
+            changes["visibility"] = body.visibility
         if not changes:
             return {"changed": []}
         changes["updated_at"] = audit.now()
@@ -571,9 +755,8 @@ def create_app(db_file: str | None = None) -> FastAPI:
     @app.get("/api/engines")
     def engine_list(c: Ctx = Depends(ctx)):
         cat = engine_catalog(c.cfg)
-        creds = {r["engine_key"]: r for r in conn.execute(
-            "SELECT engine_key, secret, token_hash FROM engine_credentials WHERE tenant_id=?",
-            (c.tenant_id,)).fetchall()}
+        creds = {r["engine_key"] for r in conn.execute(
+            "SELECT engine_key FROM engine_credentials WHERE tenant_id=?", (c.tenant_id,))}
         for k, e in cat.items():
             if not e["builtin"]:
                 e["credential_set"] = k in creds
@@ -587,6 +770,25 @@ def create_app(db_file: str | None = None) -> FastAPI:
         input_hint: str = ""
         url: str | None = None
 
+    def issue_credential(cfg: dict, key: str) -> dict:
+        e = custom_engine(cfg, key)
+        if not e:
+            raise HTTPException(404, "no such custom engine")
+        if e["kind"] == "webhook":
+            s = "fws_" + secrets.token_urlsafe(32)
+            return {"secret": crypto.encrypt(s), "token_hash": None,
+                    "public": {"signing_secret": s,
+                               "note": "shown once; your service verifies X-Fieldwork-Signature with it"}}
+        t = "fwe_" + secrets.token_urlsafe(32)
+        return {"secret": None, "token_hash": token_hash(t),
+                "public": {"engine_token": t, "note": "shown once; your script posts to /api/ingest/findings with it"}}
+
+    def store_credential(c: Ctx, key: str, cred: dict) -> None:
+        conn.execute("INSERT INTO engine_credentials (tenant_id, engine_key, secret, token_hash, created_at)"
+                     " VALUES (?,?,?,?,?) ON CONFLICT (tenant_id, engine_key) DO UPDATE SET"
+                     " secret=excluded.secret, token_hash=excluded.token_hash, created_at=excluded.created_at",
+                     (c.tenant_id, key, cred["secret"], cred["token_hash"], audit.now()))
+
     @app.post("/api/engines", status_code=201)
     def register_engine(body: EngineIn, c: Ctx = Depends(ctx)):
         """Register a team's own script or service. Returns its credential once."""
@@ -595,56 +797,38 @@ def create_app(db_file: str | None = None) -> FastAPI:
         cfg["engines"] = [*cfg.get("engines", []), body.model_dump(exclude_none=True)]
         new = config.validate(cfg, allow_http_engines=allow_private_engines(),
                               known_urls=frozenset(e.get("url") for e in c.cfg.get("engines", [])))
-        cred = issue_credential(c, new, body.key, register=True)
+        cred = issue_credential(new, body.key)
         with db.tx(conn):
             conn.execute("UPDATE tenants SET config_json=? WHERE id=?", (json.dumps(new), c.tenant_id))
             store_credential(c, body.key, cred)
-            c.log("engine.register", body.key, {"kind": body.kind, "name": body.name,
-                                                "url": body.url or None})
+            c.log("engine.register", body.key, {"kind": body.kind, "name": body.name, "url": body.url or None})
         return {"engine": custom_engine(new, body.key), **cred["public"]}
-
-    def issue_credential(c: Ctx, cfg: dict, key: str, register: bool = False) -> dict:
-        e = custom_engine(cfg, key)
-        if not e:
-            raise HTTPException(404, "no such custom engine")
-        if e["kind"] == "webhook":
-            s = "fws_" + secrets.token_urlsafe(32)
-            return {"secret": s, "token_hash": None,
-                    "public": {"signing_secret": s,
-                               "note": "shown once; your service verifies X-Fieldwork-Signature with it"}}
-        t = "fwe_" + secrets.token_urlsafe(32)
-        return {"secret": None, "token_hash": token_hash(t),
-                "public": {"engine_token": t,
-                           "note": "shown once; your script posts to /api/ingest/findings with it"}}
-
-    def store_credential(c: Ctx, key: str, cred: dict) -> None:
-        conn.execute("INSERT OR REPLACE INTO engine_credentials VALUES (?,?,?,?,?)",
-                     (c.tenant_id, key, cred["secret"], cred["token_hash"], audit.now()))
 
     @app.post("/api/engines/{key}/rotate")
     def rotate_engine(key: str, c: Ctx = Depends(ctx)):
         c.require("engine.manage")
-        cred = issue_credential(c, c.cfg, key)
+        cred = issue_credential(c.cfg, key)
         with db.tx(conn):
             store_credential(c, key, cred)
             c.log("engine.rotate", key, {})
         return cred["public"]
 
-    def engine_gate(c: Ctx, dep_id: str) -> sqlite3.Row:
+    def engine_gate(c: Ctx, dep_id: str):
         dep = c.deployment(dep_id)
         c.require_on("engine.run", dep_id)
         return dep
 
-    def save_finding(c: Ctx, dep_id: str, engine: str, title: str, result: dict,
-                     actor: str | None = None) -> str:
+    def save_finding(c: Ctx, dep_id: str, engine: str, title: str, result: dict, actor: str | None = None) -> str:
         fid = new_id("fnd")
         digest = "sha256:" + hashlib.sha256(audit.canonical(result).encode()).hexdigest()
         with db.tx(conn):
-            conn.execute("INSERT INTO findings VALUES (?,?,?,?,?,?,?,?,?,?)",
+            conn.execute("INSERT INTO findings (id, tenant_id, deployment_id, engine, title, result_json,"
+                         " confirmed_by, confirmed_at, created_by, created_at, visibility)"
+                         " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                          (fid, c.tenant_id, dep_id, engine, title, json.dumps(result),
-                          None, None, actor or c.uid, audit.now()))
-            c.log("engine.run", fid, {"engine": engine, "deployment": dep_id,
-                                      "title": title, "result_digest": digest}, actor=actor)
+                          None, None, actor or c.uid, audit.now(), "internal"))
+            c.log("engine.run", fid, {"engine": engine, "deployment": dep_id, "title": title,
+                                      "result_digest": digest}, actor=actor)
         return fid
 
     class SenderoIn(BaseModel):
@@ -662,15 +846,13 @@ def create_app(db_file: str | None = None) -> FastAPI:
         rows = engines.parse_csv(body.csv)
         result = engines.run_sendero(rows, body.metric, body.baseline, body.higher_is_worse,
                                      body.capability, body.config)
-        fid = save_finding(c, dep_id, "sendero", body.title, result)
-        return {"finding_id": fid, "result": result}
+        return {"finding_id": save_finding(c, dep_id, "sendero", body.title, result), "result": result}
 
     @app.post("/api/deployments/{dep_id}/engines/threshold")
     def run_threshold(dep_id: str, c: Ctx = Depends(ctx)):
         dep = c.deployment(dep_id)
         c.require_on("bench.match", dep_id)
-        rows = conn.execute("SELECT id, name, profile_json FROM users WHERE tenant_id=?",
-                            (c.tenant_id,)).fetchall()
+        rows = conn.execute("SELECT id, name, profile_json FROM users WHERE tenant_id=?", (c.tenant_id,)).fetchall()
         pool = [{"id": p["id"], "name": p["name"], "profile": jloads(p["profile_json"])}
                 for p in rows if jloads(p["profile_json"]).get("evidence")]
         if not pool:
@@ -679,12 +861,24 @@ def create_app(db_file: str | None = None) -> FastAPI:
         fid = save_finding(c, dep_id, "threshold", f"Bench match · {dep['name']}", result)
         return {"finding_id": fid, "result": result}
 
-    class CustomRunIn(BaseModel):
+    class RunIn(BaseModel):
         title: str = Field(default="", max_length=200)
-        input: str = Field(default="", max_length=200_000)
+        input: str = Field(default="", max_length=2_000_000)
+
+    @app.post("/api/deployments/{dep_id}/engines/stage/{key}")
+    def run_stage_engine(dep_id: str, key: str, body: RunIn, c: Ctx = Depends(ctx)):
+        dep = engine_gate(c, dep_id)
+        fn = stages.STAGE_ENGINES.get(key)
+        if not fn:
+            raise HTTPException(404, "no such engine")
+        if not body.input.strip():
+            raise HTTPException(422, "the engine needs input")
+        result = fn(body.input)
+        title = body.title or f"{engines.REGISTRY[key]['name']} · {dep['name']}"
+        return {"finding_id": save_finding(c, dep_id, key, title, result), "result": result}
 
     @app.post("/api/deployments/{dep_id}/engines/custom/{key}")
-    def run_custom(dep_id: str, key: str, body: CustomRunIn, c: Ctx = Depends(ctx)):
+    def run_custom(dep_id: str, key: str, body: RunIn, c: Ctx = Depends(ctx)):
         dep = engine_gate(c, dep_id)
         e = custom_engine(c.cfg, key)
         if not e:
@@ -695,15 +889,13 @@ def create_app(db_file: str | None = None) -> FastAPI:
                             (c.tenant_id, key)).fetchone()
         if not cred or not cred["secret"]:
             raise HTTPException(409, "engine has no signing secret; rotate its credential")
-        run_id = new_id("run")
-        payload = {"engine": key, "run_id": run_id, "input": body.input,
+        payload = {"engine": key, "run_id": new_id("run"), "input": body.input,
                    "requested_by": {"id": c.uid, "name": c.user["name"], "role": c.role},
-                   "deployment": {k: v for k, v in dep_out(dep).items() if k != "staffing_req"},
+                   "deployment": {k: v for k, v in dep_out(dep, c).items() if k != "staffing_req"},
                    "workspace": c.tenant_id}
-        result = plugins.call_webhook(e["url"], cred["secret"], payload, allow_private_engines())
+        result = plugins.call_webhook(e["url"], crypto.decrypt(cred["secret"]), payload, allow_private_engines())
         title = body.title or f"{e['name']} · {dep['name']}"
-        fid = save_finding(c, dep_id, key, title, result)
-        return {"finding_id": fid, "result": result}
+        return {"finding_id": save_finding(c, dep_id, key, title, result), "result": result}
 
     class IngestIn(BaseModel):
         deployment_id: str
@@ -720,66 +912,80 @@ def create_app(db_file: str | None = None) -> FastAPI:
                             (token_hash(tok),)).fetchone() if tok.startswith("fwe_") else None
         if not cred:
             raise HTTPException(401, "invalid engine token")
-        tenant = conn.execute("SELECT * FROM tenants WHERE id=?", (cred["tenant_id"],)).fetchone()
-        cfg = json.loads(tenant["config_json"])
+        tenant = load_tenant(cred["tenant_id"])
+        cfg = config.upgrade(json.loads(tenant["config_json"]))
         e = custom_engine(cfg, cred["engine_key"])
         if not e or e["kind"] != "push":
             raise HTTPException(401, "engine no longer registered")
         if not conn.execute("SELECT 1 FROM deployments WHERE id=? AND tenant_id=?",
                             (body.deployment_id, cred["tenant_id"])).fetchone():
             raise HTTPException(404, "deployment not found")
-        result = plugins.normalize_result({"summary": body.summary, "status": body.status,
-                                           "result": body.result})
-
-        class _EngineCtx(Ctx):
-            def __init__(self):
-                self.conn, self.tenant_id, self.cfg = conn, cred["tenant_id"], cfg
-                self.user = {"id": "engine:" + e["key"], "role": None, "name": e["name"]}
-
-        fid = save_finding(_EngineCtx(), body.deployment_id, e["key"], body.title, result,
-                           actor="engine:" + e["key"])
+        result = plugins.normalize_result({"summary": body.summary, "status": body.status, "result": body.result})
+        ectx = Ctx.__new__(Ctx)
+        ectx.conn, ectx.tenant_id, ectx.cfg = conn, cred["tenant_id"], cfg
+        ectx.user = {"id": "engine:" + e["key"], "role": None, "name": e["name"]}
+        fid = save_finding(ectx, body.deployment_id, e["key"], body.title, result, actor="engine:" + e["key"])
         return {"finding_id": fid}
 
     @app.get("/api/deployments/{dep_id}/findings")
     def findings(dep_id: str, c: Ctx = Depends(ctx)):
         c.deployment(dep_id)
+        vis = "" if c.can_on("finding.view_internal", dep_id) else " AND f.visibility='shared'"
         rows = conn.execute(
             "SELECT f.*, COALESCE(u.name, f.created_by) created_by_name, v.name confirmed_by_name"
             " FROM findings f LEFT JOIN users u ON u.id=f.created_by LEFT JOIN users v ON v.id=f.confirmed_by"
-            " WHERE f.deployment_id=? AND f.tenant_id=? ORDER BY f.created_at DESC",
+            f" WHERE f.deployment_id=? AND f.tenant_id=?{vis} ORDER BY f.created_at DESC",
             (dep_id, c.tenant_id)).fetchall()
-        return [{**{k: r[k] for k in r.keys() if k != "result_json"},
-                 "result": jloads(r["result_json"])} for r in rows]
+        return [{**{k: r[k] for k in r.keys() if k != "result_json"}, "result": jloads(r["result_json"])}
+                for r in rows]
 
-    @app.post("/api/findings/{fid}/confirm")
-    def confirm(fid: str, c: Ctx = Depends(ctx)):
-        f = conn.execute("SELECT * FROM findings WHERE id=? AND tenant_id=?",
-                         (fid, c.tenant_id)).fetchone()
+    def finding_for(c: Ctx, fid: str):
+        f = conn.execute("SELECT * FROM findings WHERE id=? AND tenant_id=?", (fid, c.tenant_id)).fetchone()
         if not f:
             raise HTTPException(404, "finding not found")
         c.deployment(f["deployment_id"])
+        if f["visibility"] != "shared" and not c.can_on("finding.view_internal", f["deployment_id"]):
+            raise HTTPException(404, "finding not found")
+        return f
+
+    @app.post("/api/findings/{fid}/confirm")
+    def confirm(fid: str, c: Ctx = Depends(ctx)):
+        f = finding_for(c, fid)
         c.require_on("finding.confirm", f["deployment_id"])
         if f["confirmed_by"]:
             raise HTTPException(409, "already confirmed")
         if f["created_by"] == c.uid:
             raise HTTPException(403, "a finding is confirmed by someone other than the person who ran it")
         with db.tx(conn):
-            conn.execute("UPDATE findings SET confirmed_by=?, confirmed_at=? WHERE id=?",
-                         (c.uid, audit.now(), fid))
+            conn.execute("UPDATE findings SET confirmed_by=?, confirmed_at=? WHERE id=?", (c.uid, audit.now(), fid))
             c.log("finding.confirm", fid, {"engine": f["engine"], "deployment": f["deployment_id"]})
         return {"ok": True}
+
+    class ShareIn(BaseModel):
+        shared: bool
+
+    @app.post("/api/findings/{fid}/share")
+    def share_finding(fid: str, body: ShareIn, c: Ctx = Depends(ctx)):
+        f = finding_for(c, fid)
+        c.require_on("customer.share", f["deployment_id"])
+        if body.shared and not f["confirmed_by"]:
+            raise HTTPException(409, "confirm a finding before sharing it with the customer")
+        vis = "shared" if body.shared else "internal"
+        with db.tx(conn):
+            conn.execute("UPDATE findings SET visibility=? WHERE id=?", (vis, fid))
+            c.log("finding.share", fid, {"visibility": vis, "deployment": f["deployment_id"]})
+        return {"visibility": vis}
 
     # ----------------------------------------------------------- dashboard
 
     @app.get("/api/dashboard")
     def dashboard(c: Ctx = Depends(ctx)):
         widgets = c.cfg["views"].get(c.role, [])
-        deps = [dep_out(r) for r in visible_deployments(c)]
+        deps = [dep_out(r, c) for r in visible_deployments(c)]
         out: dict = {"widgets": widgets}
         if "kpis" in widgets:
             out["kpis"] = {"deployments": len(deps),
-                           **{h: sum(1 for d in deps if d["health"] == h)
-                              for h in ("on_track", "at_risk", "blocked")}}
+                           **{h: sum(1 for d in deps if d["health"] == h) for h in ("on_track", "at_risk", "blocked")}}
         if "chain" in widgets:
             out["chain"] = deps
         if "my_tasks" in widgets:
@@ -787,13 +993,12 @@ def create_app(db_file: str | None = None) -> FastAPI:
         if "team" in widgets and c.can("people.read"):
             out["team"] = [p for p in people(c) if p["deployments"] or p["open_tasks"]]
         if "findings" in widgets:
-            ids = [d["id"] for d in deps]
+            ids = [d["id"] for d in deps if c.can_on("finding.view_internal", d["id"])]
             rows = conn.execute(
-                f"SELECT f.id, f.title, f.engine, f.deployment_id, f.created_at, d.name deployment"
-                f" FROM findings f JOIN deployments d ON d.id=f.deployment_id"
-                f" WHERE f.tenant_id=? AND f.confirmed_by IS NULL AND f.deployment_id IN"
-                f" ({','.join('?' * len(ids)) or 'NULL'}) ORDER BY f.created_at DESC LIMIT 20",
-                (c.tenant_id, *ids)).fetchall() if ids else []
+                "SELECT f.id, f.title, f.engine, f.deployment_id, f.created_at, d.name deployment"
+                " FROM findings f JOIN deployments d ON d.id=f.deployment_id"
+                f" WHERE f.tenant_id=? AND f.confirmed_by IS NULL AND f.deployment_id IN ({','.join('?' * len(ids))})"
+                " ORDER BY f.created_at DESC LIMIT 20", (c.tenant_id, *ids)).fetchall() if ids else []
             out["findings"] = [dict(r) for r in rows]
         return out
 
@@ -807,8 +1012,8 @@ def create_app(db_file: str | None = None) -> FastAPI:
             " COALESCE(u.name, a.actor_id) actor"
             " FROM audit a LEFT JOIN users u ON u.id=a.actor_id WHERE a.tenant_id=?"
             " ORDER BY a.seq DESC LIMIT ?", (c.tenant_id, max(1, min(limit, 500)))).fetchall()
-        return [{**{k: r[k] for k in r.keys() if k != "detail_json"},
-                 "detail": jloads(r["detail_json"])} for r in rows]
+        return [{**{k: r[k] for k in r.keys() if k != "detail_json"}, "detail": jloads(r["detail_json"])}
+                for r in rows]
 
     @app.get("/api/audit/verify")
     def audit_verify(c: Ctx = Depends(ctx)):

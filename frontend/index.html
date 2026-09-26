@@ -168,7 +168,10 @@ function logo(size = 26) {
   return `<svg width="${size}" height="${size}" viewBox="0 0 26 26" fill="none" stroke="var(--accent)" stroke-width="1.8" aria-hidden="true"><path d="M3 20 L9 8 L14 16 L18 10 L23 20"/><path d="M3 22 H23" stroke-opacity=".5"/></svg>`;
 }
 
-function signOut() { S.token = null; S.me = null; S.cfg = null; try { sessionStorage.removeItem("fw_token"); } catch (e) {} applyBrand(); renderSignIn(); }
+function signOut() {
+  if (S.token && S.token.startsWith("fwsess_")) fetch("/api/auth/logout", { method: "POST", headers: { Authorization: "Bearer " + S.token } }).catch(() => {});
+  S.token = null; S.me = null; S.cfg = null; try { sessionStorage.removeItem("fw_token"); } catch (e) {} applyBrand(); renderSignIn();
+}
 
 async function signIn(token) {
   S.token = token.trim();
@@ -189,8 +192,12 @@ async function renderSignIn() {
     <div class="brand" style="padding:0 0 18px">${logo()}<div><b>${esc(brand().product_name)}</b><small>For deployment teams</small></div></div>
     <div class="card grid">
       <h2>Sign in</h2>
-      <label class="f">Access token<input id="tok" type="password" autocomplete="off"></label>
-      <button class="btn primary" id="go">Sign in</button>
+      <label class="f">Workspace<input id="ws" placeholder="your-company" autocomplete="organization" value="${esc(lastWorkspace())}"></label>
+      <button class="btn primary" id="ssogo">Sign in with company SSO</button>
+      <details><summary style="font-size:12px">Use an access token instead</summary>
+        <div class="grid" style="gap:8px;margin-top:8px">
+          <label class="f">Access token<input id="tok" type="password" autocomplete="off"></label>
+          <button class="btn" id="go">Sign in with token</button></div></details>
       ${demos.length ? `<div style="height:1px;background:var(--line);margin:6px 0"></div>
         <div class="muted" style="font-size:12px">Demo workspace · Meridian AI's deployment team</div>
         <div class="grid" style="gap:8px">${demos.map((d, i) => `<button class="btn" data-demo="${i}" style="text-align:left">${esc(d.label)}</button>`).join("")}</div>` : ""}
@@ -198,8 +205,21 @@ async function renderSignIn() {
   </div>`;
   $("#go").onclick = () => signIn($("#tok").value);
   $("#tok").onkeydown = e => { if (e.key === "Enter") signIn($("#tok").value); };
+  const sso = act(async () => {
+    const slug = $("#ws").value.trim().toLowerCase();
+    if (!slug) { toast("Enter your workspace name", true); return; }
+    const r = await fetch(`/api/auth/workspace/${encodeURIComponent(slug)}`);
+    if (!r.ok) { toast("No workspace by that name", true); return; }
+    const w = await r.json();
+    if (!w.sso) { toast(`${w.name} doesn't use company sign-in; use an access token`, true); return; }
+    try { localStorage.setItem("fw_ws", slug); } catch (e) {}
+    location.href = `/auth/sso/${encodeURIComponent(slug)}/start`;
+  });
+  $("#ssogo").onclick = sso;
+  $("#ws").onkeydown = e => { if (e.key === "Enter") sso(); };
   document.querySelectorAll("[data-demo]").forEach(b => b.onclick = () => signIn(demos[+b.dataset.demo].token));
 }
+function lastWorkspace() { try { return localStorage.getItem("fw_ws") || ""; } catch (e) { return ""; } }
 
 function render() {
   const items = [
@@ -260,9 +280,9 @@ async function overview() {
 function chainBoard(deps) {
   return `<div class="board">${S.cfg.stages.map(s => {
     const here = deps.filter(d => d.stage === s.key);
-    const eng = S.engines[s.engine] || {};
+    const names = (s.engines || []).map(k => (S.engines[k] || {}).name || k);
     return `<div class="col"><h3><span>${esc(s.name)}</span><span>${here.length}</span></h3>
-      <div class="engine-tag" style="margin:0 4px 10px">${s.engine === "none" ? "&nbsp;" : esc(eng.name || s.engine)}${eng.status === "planned" ? " · planned" : ""}</div>
+      <div class="engine-tag" style="margin:0 4px 10px">${names.length ? names.map(esc).join(" + ") : "&nbsp;"}</div>
       ${here.map(d => `<button class="dcard" data-dep="${esc(d.id)}">
         <div class="c">${esc(d.customer)}</div><div class="t">${esc(d.name)}</div>
         <div class="row">${pill(d.health)}<span class="faint" style="font-size:11px">${d.members.filter(m => m.role !== "customer").map(m => esc(m.name.split(" ")[0])).join(", ")}</span></div>
@@ -335,8 +355,9 @@ async function deploymentView() {
   const yc = a => d.you_can.includes(a);
   const keys = S.cfg.stages.map(s => s.key);
   const idx = keys.indexOf(d.stage);
-  const stage = S.cfg.stages[idx] || { name: d.stage, engine: "none", exit_criteria: "" };
+  const stage = S.cfg.stages[idx] || { name: d.stage, engines: [], exit_criteria: "" };
   const next = keys[idx + 1];
+  const teamView = yc("task.view_internal");
 
   let mover = "";
   if (yc("deployment.jump")) mover = `<select id="advto" aria-label="Move to stage">${S.cfg.stages.map(s => `<option value="${esc(s.key)}" ${s.key === next ? "selected" : ""} ${s.key === d.stage ? "disabled" : ""}>${esc(s.name)}</option>`).join("")}</select>
@@ -350,6 +371,7 @@ async function deploymentView() {
       <div class="spacer"></div>
       ${yc("deployment.edit") ? `<select id="health" aria-label="Health">${["on_track", "at_risk", "blocked"].map(h => `<option value="${h}" ${h === d.health ? "selected" : ""}>${h.replace("_", " ")}</option>`).join("")}</select>` : pill(d.health)}
     </div>
+    ${!teamView ? `<p class="muted" style="margin:6px 0 0">You're seeing what the deployment team has shared with you.</p>` : ""}
     <div class="chain">${S.cfg.stages.map((s, i) => `<div class="step ${i < idx ? "past" : i === idx ? "now" : ""}"><small>${i + 1}</small>${esc(s.name)}</div>`).join("")}</div>
     <div class="card" style="margin-top:12px"><div class="row">
       <div><div class="faint" style="font-size:11px;text-transform:uppercase;letter-spacing:.6px">Exit criteria · ${esc(stage.name)}</div>
@@ -357,7 +379,7 @@ async function deploymentView() {
 
     <div class="grid two" style="margin-top:14px">
       <div class="grid">
-        <div class="card" id="enginePanel"></div>
+        ${yc("engine.run") || yc("bench.match") ? `<div class="card" id="enginePanel"></div>` : ""}
         <div class="card"><h2>Findings</h2><div id="findings"></div></div>
       </div>
       <div class="grid">
@@ -365,8 +387,9 @@ async function deploymentView() {
           <div id="tasklist" style="margin-top:10px"></div>
           ${yc("task.create") ? `<div class="row" style="margin-top:12px">
             <input id="nt" placeholder="New task" style="flex:1;min-width:160px">
-            ${yc("task.assign") ? `<select id="nta" aria-label="Assignee"><option value="">Me</option>${d.members.filter(p => p.id !== S.me.user.id && p.role !== "customer").map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select>` : ""}
+            ${yc("task.assign") ? `<select id="nta" aria-label="Assignee"><option value="">Me</option>${d.members.filter(p => p.id !== S.me.user.id).map(p => `<option value="${esc(p.id)}">${esc(p.name)}${p.role === "customer" ? " (customer)" : ""}</option>`).join("")}</select>` : ""}
             <input id="ntd" type="date" aria-label="Due">
+            ${yc("customer.share") ? `<label class="row" style="gap:4px;font-size:12px;color:var(--dim)"><input type="checkbox" id="nts"> share with customer</label>` : ""}
             <button class="btn" id="ntgo">Add</button></div>` : ""}
         </div>
         <div class="card"><h2 style="margin:0">Team</h2>
@@ -393,47 +416,87 @@ async function deploymentView() {
   document.querySelectorAll("[data-rm]").forEach(b => b.onclick = act(async () => { await api(`/api/deployments/${id}/members/${b.dataset.rm}`, { method: "DELETE" }); reload(); }));
   const am = $("#addmgo"); if (am) am.onclick = act(async () => { await api(`/api/deployments/${id}/members`, { method: "POST", body: { user_id: $("#addm").value } }); reload(); });
   const nt = $("#ntgo"); if (nt) nt.onclick = act(async () => {
-    await api("/api/tasks", { method: "POST", body: { deployment_id: id, title: $("#nt").value, assignee_id: ($("#nta") || {}).value || null, due: $("#ntd").value || null } });
+    const r = await api("/api/tasks", { method: "POST", body: { deployment_id: id, title: $("#nt").value, assignee_id: ($("#nta") || {}).value || null,
+      due: $("#ntd").value || null, visibility: ($("#nts") || {}).checked ? "shared" : "internal" } });
+    if (r.visibility === "shared" && !($("#nts") || {}).checked) toast("Shared with the customer, since it's assigned to them");
     reload();
   });
 
-  renderTasks(tasks, $("#tasklist"), reload, false, yc("task.update_any"));
-  renderFindings(findings, reload, yc("finding.confirm"));
-  renderEngine(stage, d, reload, yc);
+  renderTasks(tasks, $("#tasklist"), reload, false, yc("task.update_any"), yc("customer.share") && teamView, teamView);
+  renderFindings(findings, reload, yc("finding.confirm"), yc("customer.share"));
+  if ($("#enginePanel")) renderEngines(stage, d, reload, yc);
 }
 
-function renderTasks(tasks, el, reload, showDep, updateAny) {
+function renderTasks(tasks, el, reload, showDep, updateAny, mayShare, showBadge) {
   if (!tasks.length) { el.innerHTML = `<div class="empty">No tasks.</div>`; return; }
   el.innerHTML = `<table><tbody>${tasks.map(t => {
     const editable = t.assignee_id === S.me.user.id || updateAny;
-    return `<tr><td style="width:44%">${esc(t.title)}${showDep ? `<div class="faint" style="font-size:12px">${esc(t.deployment)}</div>` : ""}</td>
+    return `<tr><td style="width:44%">${esc(t.title)}${showDep ? `<div class="faint" style="font-size:12px">${esc(t.deployment)}</div>` : ""}
+        ${t.visibility === "shared" && showBadge ? ` <span class="pill plain" style="color:var(--violet)">shared</span>` : ""}</td>
       <td class="muted">${esc(t.assignee || "—")}</td><td class="faint mono" style="font-size:12px">${fmtDate(t.due)}</td>
-      <td>${editable ? `<select data-task="${esc(t.id)}" aria-label="Status">${["open", "in_progress", "blocked", "done"].map(s => `<option value="${s}" ${s === t.status ? "selected" : ""}>${s.replace("_", " ")}</option>`).join("")}</select>` : pill(t.status)}</td></tr>`;
+      <td>${editable ? `<select data-task="${esc(t.id)}" aria-label="Status">${["open", "in_progress", "blocked", "done"].map(s => `<option value="${s}" ${s === t.status ? "selected" : ""}>${s.replace("_", " ")}</option>`).join("")}</select>` : pill(t.status)}</td>
+      ${mayShare ? `<td><button class="btn small" data-vis="${esc(t.id)}" data-to="${t.visibility === "shared" ? "internal" : "shared"}">${t.visibility === "shared" ? "Make internal" : "Share"}</button></td>` : ""}</tr>`;
   }).join("")}</tbody></table>`;
   el.querySelectorAll("[data-task]").forEach(s => s.onchange = act(async () => {
     await api(`/api/tasks/${s.dataset.task}`, { method: "PATCH", body: { status: s.value } }); toast("Task updated"); reload();
   }));
+  el.querySelectorAll("[data-vis]").forEach(b => b.onclick = act(async () => {
+    await api(`/api/tasks/${b.dataset.vis}`, { method: "PATCH", body: { visibility: b.dataset.to } });
+    toast(b.dataset.to === "shared" ? "Shared with the customer" : "Now internal only"); reload();
+  }));
+}
+
+/* ------------------------------------------------ engine result views */
+const kv = (label, value, cls) => `<div class="kpi"><div class="n ${cls || ""}" style="font-size:20px">${esc(value)}</div><div class="l">${esc(label)}</div></div>`;
+function resultView(engine, r) {
+  const x = r.result || {};
+  const head = `<div class="row">${pill(r.status)}<b>${esc(r.summary)}</b></div>`;
+  let body = "";
+  if (engine === "census" && x.systems) body = `<table style="margin-top:8px"><tbody>${x.systems.map(s => `<tr><td>${esc(s.system)}</td><td>${pill(s.severity === "blocker" ? "fail" : s.severity === "gap" ? "warn" : "pass", s.severity === "ok" ? "ready" : s.severity)}</td><td class="muted" style="font-size:12px">${esc(s.gaps.join("; "))}</td></tr>`).join("")}</tbody></table>
+      <details style="margin-top:8px"><summary style="font-size:12px">Findings memo</summary><pre class="mono" style="font-size:12px;white-space:pre-wrap">${esc(x.memo)}</pre></details>`;
+  else if (engine === "cortex" && x.scenarios) body = `<table style="margin-top:8px"><thead><tr><th>Scenario</th><th>Expected</th><th>Cortex decided</th></tr></thead><tbody>${x.scenarios.map(s => `<tr><td>${esc(s.scenario)}<div class="faint" style="font-size:11px">${esc(s.reasons.join("; "))}</div></td><td class="mono" style="font-size:12px">${esc(s.expected || "—")}</td><td>${pill(s.ok ? "pass" : "fail", s.decision)}</td></tr>`).join("")}</tbody></table>
+      ${x.profile_errors.length ? `<div class="blocked" style="margin-top:6px;font-size:12px">${x.profile_errors.map(esc).join("<br>")}</div>` : ""}
+      ${x.risks.length ? `<div style="margin-top:8px;font-size:12px"><b class="at_risk">Risks</b><ul style="margin:4px 0 0;padding-left:18px">${x.risks.map(k => `<li>${esc(k)}</li>`).join("")}</ul></div>` : ""}`;
+  else if (engine === "conformance" && x.by_category) body = `<table style="margin-top:8px"><thead><tr><th>Category</th><th>Pass</th><th>Rate</th></tr></thead><tbody>${Object.entries(x.by_category).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v.passed}/${v.total}</td><td>${pill(v.rate >= x.threshold ? "pass" : "fail", Math.round(v.rate * 100) + "%")}</td></tr>`).join("")}</tbody></table>
+      ${x.failures.length ? `<div style="margin-top:8px;font-size:12px"><b>Failures</b>${x.failures.map(f => `<div class="${f.critical ? "blocked" : "muted"}">${esc(f.case_id)} · expected “${esc(f.expected)}”, got “${esc(f.actual)}”${f.critical ? " · critical" : ""}</div>`).join("")}</div>` : ""}`;
+  else if (engine === "golive" && x.checks) body = `<table style="margin-top:8px"><tbody>${x.checks.map(c => `<tr><td>${esc(c.check)}</td><td>${pill(c.ok ? "pass" : "fail", c.ok ? "met" : "not met")}</td><td class="muted" style="font-size:12px">${esc(c.detail)}</td></tr>`).join("")}</tbody></table>
+      <div class="faint" style="font-size:12px;margin-top:6px">Mean time to resolve: sev1 ${x.mean_time_to_resolve.sev1_hours ?? "—"}h · sev2 ${x.mean_time_to_resolve.sev2_hours ?? "—"}h</div>`;
+  else if (engine === "attribution" && x.value) {
+    const v = x.value;
+    const total = Object.values(x.delay_days_by_cause).reduce((a, b) => a + b, 0) + (x.unattributed_days || 0);
+    const seg = (n, col) => total ? `<i style="width:${100 * n / total}%;background:${col}"></i>` : "";
+    body = `<div class="grid kpis" style="margin-top:10px">${kv("Improvement", v.improvement_pct + "%", "on_track")}${v.hours_saved_per_month != null ? kv("Hours saved / month", v.hours_saved_per_month) : ""}${v.value_per_year != null ? kv("Value / year", "$" + v.value_per_year.toLocaleString()) : ""}</div>
+      ${x.slip_days ? `<div style="margin-top:10px;font-size:12px">${x.slip_days} days late, attributed:</div>
+      <div class="bar" style="height:12px;margin:6px 0">${seg(x.delay_days_by_cause.customer, "var(--blue)")}${seg(x.delay_days_by_cause.vendor, "var(--amber)")}${seg(x.delay_days_by_cause.third_party, "var(--violet)")}${seg(x.unattributed_days, "var(--line2)")}</div>
+      <div class="row faint" style="font-size:12px"><span style="color:var(--blue)">customer ${x.delay_days_by_cause.customer}d</span><span style="color:var(--amber)">us ${x.delay_days_by_cause.vendor}d</span><span style="color:var(--violet)">third party ${x.delay_days_by_cause.third_party}d</span><span>unattributed ${x.unattributed_days}d</span></div>` : ""}`;
+  } else if (Object.keys(x).length) body = `<details style="margin-top:6px"><summary style="font-size:12px">Details</summary><pre class="mono" style="font-size:11px;white-space:pre-wrap;color:var(--dim)">${esc(JSON.stringify(x, null, 2))}</pre></details>`;
+  return head + body;
 }
 
 function findingBody(f) {
   const r = f.result;
   if (f.engine === "sendero") return senderoSummary(r);
   if (f.engine === "threshold") return `<span class="muted">${r.ranked.length} people scored · top: ${esc(r.ranked[0]?.name)} (${esc((r.ranked[0]?.verdict || "").replace("_", " "))})</span>`;
-  return `<div class="row">${pill(r.status)}<span>${esc(r.summary)}</span></div>`;
+  return resultView(f.engine, r);
 }
 
-function renderFindings(findings, reload, mayConfirm) {
+function renderFindings(findings, reload, mayConfirm, mayShare) {
   const el = $("#findings");
-  if (!findings.length) { el.innerHTML = `<div class="empty">No engine runs on this deployment yet.</div>`; return; }
-  el.innerHTML = findings.map(f => `<div style="padding:10px 0;border-bottom:1px solid var(--line)">
-    <div class="row"><b>${esc(f.title)}</b><span class="engine-tag">${esc((S.engines[f.engine] || {}).name || f.engine)}</span><div class="spacer"></div>
+  if (!findings.length) { el.innerHTML = `<div class="empty">${S.me.can["finding.view_internal"] ? "No engine runs on this deployment yet." : "Nothing has been shared with you yet."}</div>`; return; }
+  el.innerHTML = findings.map(f => `<div style="padding:12px 0;border-bottom:1px solid var(--line)">
+    <div class="row"><b>${esc(f.title)}</b><span class="engine-tag">${esc((S.engines[f.engine] || {}).name || f.engine)}</span>
+    ${f.visibility === "shared" && mayShare ? `<span class="pill plain" style="color:var(--violet)">shared with customer</span>` : ""}<div class="spacer"></div>
     ${f.confirmed_by ? pill("done", "confirmed · " + f.confirmed_by_name)
-      : mayConfirm && f.created_by !== S.me.user.id ? `<button class="btn small" data-confirm="${esc(f.id)}">Confirm</button>` : `<span class="pill plain faint">awaiting confirmation</span>`}</div>
+      : mayConfirm && f.created_by !== S.me.user.id ? `<button class="btn small" data-confirm="${esc(f.id)}">Confirm</button>` : `<span class="pill plain faint">awaiting confirmation</span>`}
+    ${mayShare && f.confirmed_by ? `<button class="btn small" data-share="${esc(f.id)}" data-to="${f.visibility === "shared" ? "0" : "1"}">${f.visibility === "shared" ? "Unshare" : "Share with customer"}</button>` : ""}</div>
     <div class="faint" style="font-size:12px">${esc(f.created_by_name)} · ${fmtDate(f.created_at)}</div>
     <div style="margin-top:6px">${findingBody(f)}</div>
-    ${!["sendero", "threshold"].includes(f.engine) && f.result.result && Object.keys(f.result.result).length ? `<details style="margin-top:4px"><summary style="font-size:12px">Details</summary><pre class="mono" style="font-size:11px;white-space:pre-wrap;color:var(--dim)">${esc(JSON.stringify(f.result.result, null, 2))}</pre></details>` : ""}
   </div>`).join("");
   el.querySelectorAll("[data-confirm]").forEach(b => b.onclick = act(async () => { await api(`/api/findings/${b.dataset.confirm}/confirm`, { method: "POST" }); toast("Finding confirmed into the record"); reload(); }));
+  el.querySelectorAll("[data-share]").forEach(b => b.onclick = act(async () => {
+    await api(`/api/findings/${b.dataset.share}/share`, { method: "POST", body: { shared: b.dataset.to === "1" } });
+    toast(b.dataset.to === "1" ? "Shared with the customer" : "Now internal only"); reload();
+  }));
 }
 
 function senderoSummary(r) {
@@ -444,46 +507,53 @@ function senderoSummary(r) {
     <div class="faint" style="font-size:11px">build ${b}% · training ${100 - b}%</div>`;
 }
 
-function renderEngine(stage, d, reload, yc) {
+function renderEngines(stage, d, reload, yc) {
   const el = $("#enginePanel");
-  const eng = S.engines[stage.engine] || { name: "No engine", status: "n/a" };
+  const list = (stage.engines || []).filter(k => S.engines[k]);
+  const tabKey = "eng_" + d.id + "_" + stage.key;
+  let current = S[tabKey] && list.includes(S[tabKey]) ? S[tabKey] : list[0];
   const mayRun = yc("engine.run");
-  const head = `<div class="row"><h2 style="margin:0">Engine · ${esc(eng.name)}</h2><div class="spacer"></div>
-    ${eng.builtin === false ? `<span class="pill plain">your engine · ${esc(eng.kind)}</span>` : ""}
-    ${eng.status === "live" ? pill("done", "live") : eng.status === "planned" ? `<span class="pill plain faint">planned</span>` : ""}</div>
-    <p class="muted" style="margin:6px 0 12px">${esc(eng.does || "")}</p>`;
-  let body = "";
-  if (stage.engine === "sendero") {
-    body = mayRun ? `<div class="grid" style="gap:8px">
+  const draw = () => {
+    const eng = current ? S.engines[current] : null;
+    const tabs = list.length > 1 ? `<div class="tabs" role="tablist" style="margin-bottom:10px">${list.map(k => `<button role="tab" aria-selected="${k === current}" class="${k === current ? "on" : ""}" data-etab="${esc(k)}">${esc(S.engines[k].name)}</button>`).join("")}</div>` : "";
+    let body = "";
+    if (!eng) body = `<div class="empty">No engine on this stage. Add one in Workspace settings → Deployment chain.</div>`;
+    else if (!mayRun) body = `<div class="empty">Your role can view results but not run engines here.</div>`;
+    else if (current === "sendero") body = `<div class="grid" style="gap:8px">
       <label class="f">Friction point<input id="se_t" placeholder="e.g. Invoice exception handling time"></label>
       <label class="f">Per-user data (CSV: one row per user, a metric column, cohort columns)<textarea id="se_csv" rows="6" placeholder="user_id,minutes,tenure_months,site"></textarea></label>
       <div class="row"><label class="f">Metric column<input id="se_m" style="width:190px"></label>
       <label class="f">Baseline<input id="se_b" type="number" step="any" style="width:100px"></label>
       <label class="f">Higher is worse<select id="se_h"><option value="1">yes</option><option value="0">no</option></select></label></div>
       <div class="row"><button class="btn primary" id="se_go">Classify</button><button class="btn" id="se_sample">Load sample data</button></div>
-      <div id="se_out"></div></div>` : `<div class="empty">Engine runs on this deployment are done by the deployment team.</div>`;
-  } else if (eng.builtin === false && eng.kind === "webhook") {
-    body = mayRun ? `<div class="grid" style="gap:8px">
-      <label class="f">Input${eng.input_hint ? ` · <span class="faint">${esc(eng.input_hint)}</span>` : ""}<textarea id="cu_in" rows="8"></textarea></label>
-      <div class="row"><button class="btn primary" id="cu_go">Run ${esc(eng.name)}</button><button class="btn" id="cu_sample">Load sample</button></div>
-      <div id="cu_out"></div></div>` : `<div class="empty">Engine runs on this deployment are done by the deployment team.</div>`;
-  } else if (eng.builtin === false && eng.kind === "push") {
-    body = `<div class="empty">This engine runs in its own environment and posts results in. They appear under Findings.</div>`;
-  } else if (eng.status === "planned") {
-    body = `<div class="empty">${esc(eng.name)} isn't connected yet. Plug in your own engine for this stage in settings, or track the stage with tasks.</div>`;
-  } else if (stage.engine === "none") {
-    body = `<div class="empty">No engine on this stage.</div>`;
-  }
-  let bench = "";
-  if (yc("bench.match")) bench = `<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
+      <div id="eng_out"></div></div>`;
+    else if (eng.kind === "push") body = `<div class="empty">This engine runs in its own environment and posts results in. They appear under Findings.</div>`;
+    else body = `<div class="grid" style="gap:8px">
+      <label class="f">Input${eng.input_hint ? `<span class="faint">${esc(eng.input_hint)}</span>` : ""}<textarea id="gen_in" rows="9"></textarea></label>
+      <div class="row"><button class="btn primary" id="gen_go">Run ${esc(eng.name)}</button><button class="btn" id="gen_sample">Load sample</button></div>
+      <div id="eng_out"></div></div>`;
+    el.innerHTML = tabs + (eng ? `<div class="row"><h2 style="margin:0">${esc(eng.name)}</h2><div class="spacer"></div>
+      ${eng.builtin === false ? `<span class="pill plain">your engine · ${esc(eng.kind)}</span>` : `<span class="pill plain faint">built in</span>`}</div>
+      <p class="muted" style="margin:6px 0 12px">${esc(eng.does || "")}</p>` : "") + body + benchHtml(d, yc);
+    el.querySelectorAll("[data-etab]").forEach(b => b.onclick = () => { current = S[tabKey] = b.dataset.etab; draw(); });
+    bindRun(eng, current, d, reload, yc);
+  };
+  draw();
+}
+
+function benchHtml(d, yc) {
+  if (!yc("bench.match")) return "";
+  return `<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
       <div class="row"><b>Bench · Threshold</b><span class="muted" style="font-size:12px">who can staff this deployment</span></div>
       <details style="margin:8px 0"><summary>Staffing requirements</summary>
         <textarea id="th_req" rows="8" style="width:100%;margin-top:6px">${esc(d.staffing_req)}</textarea>
         ${yc("deployment.staff") ? `<button class="btn small" id="th_save">Save requirements</button>` : ""}</details>
       <button class="btn" id="th_go">Match bench</button><div id="th_out" style="margin-top:10px"></div></div>`;
-  el.innerHTML = head + body + bench;
+}
 
-  const refreshFindings = async () => renderFindings(await api(`/api/deployments/${d.id}/findings`), reload, yc("finding.confirm"));
+function bindRun(eng, key, d, reload, yc) {
+  const refreshFindings = async () => renderFindings(await api(`/api/deployments/${d.id}/findings`), reload, yc("finding.confirm"), yc("customer.share"));
+  const done = async () => { toast("Saved as a finding, awaiting confirmation"); await refreshFindings(); };
   const go = $("#se_go");
   if (go) {
     $("#se_sample").onclick = act(async () => {
@@ -497,29 +567,28 @@ function renderEngine(stage, d, reload, yc) {
         title: $("#se_t").value || "Friction point", csv: $("#se_csv").value, metric: $("#se_m").value.trim(),
         baseline: b === "" ? null : +b, higher_is_worse: $("#se_h").value === "1" } });
       const x = r.result;
-      $("#se_out").innerHTML = `<div class="card" style="background:var(--panel2);margin-top:8px">${senderoSummary(x)}
+      $("#eng_out").innerHTML = `<div class="card" style="background:var(--panel2);margin-top:8px">${senderoSummary(x)}
         <p style="margin:10px 0 6px">${esc(x.recommendation)}</p>
         <div class="muted" style="font-size:12px">${esc(x.level1_dispersion.reading)}</div>
         <div class="muted" style="font-size:12px;margin-top:4px">${esc(x.level2_explanatory.reading)}</div></div>`;
-      toast("Saved as a finding, awaiting confirmation"); await refreshFindings();
+      await done();
     });
   }
-  const cg = $("#cu_go");
-  if (cg) {
-    $("#cu_sample").onclick = act(async () => { $("#cu_in").value = (await api(`/api/demo/sample-input/${stage.engine}`)).input; });
-    cg.onclick = act(async () => {
-      cg.disabled = true;
+  const gg = $("#gen_go");
+  if (gg) {
+    $("#gen_sample").onclick = act(async () => { $("#gen_in").value = (await api(`/api/demo/sample-input/${key}`)).input; });
+    gg.onclick = act(async () => {
+      gg.disabled = true;
       try {
-        const r = await api(`/api/deployments/${d.id}/engines/custom/${stage.engine}`, { method: "POST", body: { input: $("#cu_in").value } });
-        const x = r.result;
-        $("#cu_out").innerHTML = `<div class="card" style="background:var(--panel2);margin-top:8px"><div class="row">${pill(x.status)}<b>${esc(x.summary)}</b></div>
-          ${Object.keys(x.result || {}).length ? `<pre class="mono" style="font-size:11px;white-space:pre-wrap;color:var(--dim);margin:8px 0 0">${esc(JSON.stringify(x.result, null, 2))}</pre>` : ""}</div>`;
-        toast("Saved as a finding, awaiting confirmation"); await refreshFindings();
-      } finally { cg.disabled = false; }
+        const path = eng.builtin ? `stage/${key}` : `custom/${key}`;
+        const r = await api(`/api/deployments/${d.id}/engines/${path}`, { method: "POST", body: { input: $("#gen_in").value } });
+        $("#eng_out").innerHTML = `<div class="card" style="background:var(--panel2);margin-top:8px">${resultView(key, r.result)}</div>`;
+        await done();
+      } finally { gg.disabled = false; }
     });
   }
   const ts = $("#th_save");
-  if (ts) ts.onclick = act(async () => { await api(`/api/deployments/${d.id}`, { method: "PATCH", body: { staffing_req: $("#th_req").value } }); toast("Requirements saved"); });
+  if (ts) ts.onclick = act(async () => { await api(`/api/deployments/${d.id}`, { method: "PATCH", body: { staffing_req: $("#th_req").value } }); d.staffing_req = $("#th_req").value; toast("Requirements saved"); });
   const tg = $("#th_go");
   if (tg) tg.onclick = act(async () => {
     const r = await api(`/api/deployments/${d.id}/engines/threshold`, { method: "POST" });
@@ -527,7 +596,7 @@ function renderEngine(stage, d, reload, yc) {
       <summary><span style="color:var(--ink)">${esc(p.name)}</span> ${pill(p.verdict)} <span class="faint" style="font-size:12px">${esc(p.summary)}</span></summary>
       <table style="margin-top:6px"><tbody>${p.findings.map(f => `<tr><td style="font-size:12px">${f.gate ? "<b>gate</b> · " : ""}${esc(f.requirement)}</td>
         <td>${pill(f.status)}</td><td class="faint" style="font-size:12px">${esc(f.detail)}${f.citations.length ? `<div class="mono">${f.citations.map(esc).join(", ")}</div>` : ""}</td></tr>`).join("")}</tbody></table></details>`).join("");
-    toast("Saved as a finding, awaiting confirmation"); await refreshFindings();
+    await done();
   });
 }
 
@@ -589,7 +658,8 @@ async function settings() {
   const meta = S.meta;
   const cfg = JSON.parse(JSON.stringify(meta.config));
   const engines = await api("/api/engines");
-  const tabs = [["branding", "Branding"], ["roles", "Roles & access"], ["views", "Home screens"], ["stages", "Deployment chain"], ["engines", "Engines"], ["fields", "Custom fields"]]
+  const ssoInfo = can("config.edit") ? await api("/api/sso") : null;
+  const tabs = [["branding", "Branding"], ["roles", "Roles & access"], ["views", "Home screens"], ["stages", "Deployment chain"], ["engines", "Engines"], ["sso", "Company sign-in"], ["fields", "Custom fields"]]
     .filter(([k]) => k === "engines" ? can("engine.manage") : can("config.edit"));
   if (!tabs.some(t => t[0] === S.settingsTab)) S.settingsTab = tabs[0][0];
 
@@ -632,13 +702,14 @@ async function settings() {
       ${Object.entries(meta.widgets).map(([w, label]) => `<tr><td>${esc(label)}</td>${cfg.roles.map(r => `<td><input type="checkbox" data-w="${w}" data-role="${esc(r.key)}" ${(cfg.views[r.key] || []).includes(w) ? "checked" : ""} aria-label="${esc(r.name + ": " + label)}"></td>`).join("")}</tr>`).join("")}
       </tbody></table></div></div>`;
     if (t === "stages") {
-      const engOpts = Object.values(engines).map(e => [e.key, e.name + (e.builtin ? (e.status === "planned" ? " (planned)" : "") : " (yours)")]);
-      body = `<div class="card"><p class="muted" style="margin-top:0">Your methodology: the stages every deployment moves through, their exit criteria, and the engine on each.</p>
-        <table><thead><tr><th></th><th>Stage</th><th>Key</th><th>Engine</th><th>Exit criteria</th><th></th></tr></thead><tbody>
+      const engOpts = Object.values(engines).filter(e => e.key !== "none" && e.key !== "threshold").map(e => [e.key, e.name + (e.builtin ? "" : " (yours)")]);
+      body = `<div class="card"><p class="muted" style="margin-top:0">Your methodology: the stages every deployment moves through, their exit criteria, and the engines on each (up to 4).</p>
+        <table><thead><tr><th></th><th>Stage</th><th>Key</th><th>Engines</th><th>Exit criteria</th><th></th></tr></thead><tbody>
         ${cfg.stages.map((s, i) => `<tr><td class="faint mono">${i + 1}</td>
           <td><input data-s="${i}" data-k="name" value="${esc(s.name)}" style="width:130px"></td>
           <td><input data-s="${i}" data-k="key" value="${esc(s.key)}" style="width:100px" class="mono"></td>
-          <td><select data-s="${i}" data-k="engine">${engOpts.map(([k, n]) => `<option value="${esc(k)}" ${k === s.engine ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></td>
+          <td style="min-width:220px">${s.engines.map((k, j) => `<span class="pill plain" style="margin:0 4px 4px 0">${esc((engines[k] || {}).name || k)} <button class="btn small" style="padding:0 5px;border:0;background:none" data-edrop="${i}:${j}" aria-label="Remove engine">✕</button></span>`).join("")}
+            ${s.engines.length < 4 ? `<select data-eadd="${i}" aria-label="Add engine" style="font-size:12px;padding:3px"><option value="">+ engine</option>${engOpts.filter(([k]) => !s.engines.includes(k)).map(([k, n]) => `<option value="${esc(k)}">${esc(n)}</option>`).join("")}</select>` : ""}</td>
           <td><input data-s="${i}" data-k="exit_criteria" value="${esc(s.exit_criteria)}" style="width:100%;min-width:240px"></td>
           <td style="white-space:nowrap"><button class="btn small" data-up="${i}" ${i ? "" : "disabled"} aria-label="Move up">↑</button>
             <button class="btn small" data-del="${i}" aria-label="Remove stage">✕</button></td></tr>`).join("")}
@@ -669,6 +740,22 @@ async function settings() {
         <div class="card" style="margin-top:14px"><h2>Built-in engines</h2><table><tbody>
           ${Object.values(engines).filter(e => e.builtin && e.key !== "none").map(e => `<tr><td><b>${esc(e.name)}</b><div class="faint" style="font-size:12px">${esc(e.does)}</div></td><td>${e.status === "live" ? pill("done", "live") : `<span class="pill plain faint">planned</span>`}</td></tr>`).join("")}
         </tbody></table></div>`;
+    }
+    if (t === "sso" && ssoInfo) {
+      const c = cfg.sso;
+      body = `<div class="card grid" style="max-width:760px">
+        <p class="muted" style="margin:0">Let people sign in with your identity provider (Okta, Microsoft Entra ID, Google Workspace, or any OpenID Connect provider).</p>
+        <label class="row" style="gap:8px"><input type="checkbox" id="sso_on" ${c.enabled ? "checked" : ""}> Enable company sign-in</label>
+        <label class="f">Issuer URL<input id="sso_iss" value="${esc(c.issuer)}" placeholder="https://yourco.okta.com"></label>
+        <label class="f">Client ID<input id="sso_cid" value="${esc(c.client_id)}"></label>
+        <label class="f">Client secret ${ssoInfo.client_secret_set ? `<span class="done">· set (stored encrypted)</span>` : `<span class="at_risk">· not set</span>`}
+          <div class="row"><input id="sso_sec" type="password" placeholder="${ssoInfo.client_secret_set ? "Enter a new secret to replace it" : "Paste from your identity provider"}" style="flex:1"><button class="btn small" id="sso_sec_go">Save secret</button></div></label>
+        <label class="f">Allowed email domains (comma-separated)<input id="sso_dom" value="${esc(c.allowed_domains.join(", "))}" placeholder="yourco.com"></label>
+        <label class="f">Create accounts on first sign-in with role
+          <select id="sso_jit"><option value="">Off: an admin adds people first</option>${cfg.roles.map(r => `<option value="${esc(r.key)}" ${r.key === c.jit_role ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select></label>
+        <label class="row" style="gap:8px;flex-wrap:nowrap;align-items:flex-start"><input type="checkbox" id="sso_req" style="margin-top:4px" ${c.required ? "checked" : ""}> Require company sign-in (access tokens keep working only for people who can edit settings, as break-glass access)</label>
+        <div class="card" style="background:var(--panel2)"><div class="faint" style="font-size:12px">Give your identity provider this redirect URI</div><code class="mono">${esc(ssoInfo.redirect_uri)}</code>
+          <div class="faint" style="font-size:12px;margin-top:8px">Your people's sign-in link</div><code class="mono">${esc(ssoInfo.start_url)}</code></div></div>`;
     }
     if (t === "fields") body = `<div class="card"><p class="muted" style="margin-top:0">JSON. Types: text, number, date, select (with options), bool.</p>
       <textarea id="fields" rows="14" style="width:100%">${esc(JSON.stringify(cfg.fields, null, 2))}</textarea></div>`;
@@ -720,6 +807,19 @@ async function settings() {
       cfg.views[el.dataset.role] = Object.keys(meta.widgets).filter(w => v.has(w));
     });
     // stages
+    document.querySelectorAll("[data-eadd]").forEach(el => el.onchange = () => { if (el.value) { cfg.stages[+el.dataset.eadd].engines.push(el.value); draw(); } });
+    document.querySelectorAll("[data-edrop]").forEach(b => b.onclick = () => { const [i, j] = b.dataset.edrop.split(":").map(Number); cfg.stages[i].engines.splice(j, 1); draw(); });
+    // company sign-in
+    const so = $("#sso_on"); if (so) {
+      const sync = () => { cfg.sso = { enabled: $("#sso_on").checked, issuer: $("#sso_iss").value.trim(), client_id: $("#sso_cid").value.trim(),
+        allowed_domains: $("#sso_dom").value.split(",").map(x => x.trim()).filter(Boolean), jit_role: $("#sso_jit").value, required: $("#sso_req").checked }; };
+      ["#sso_on", "#sso_iss", "#sso_cid", "#sso_dom", "#sso_jit", "#sso_req"].forEach(q => { $(q).oninput = $(q).onchange = sync; });
+      $("#sso_sec_go").onclick = act(async () => {
+        if (!$("#sso_sec").value) return;
+        await api("/api/sso/secret", { method: "PUT", body: { client_secret: $("#sso_sec").value } });
+        toast("Client secret saved, encrypted"); await settings();
+      });
+    }
     document.querySelectorAll("[data-s]").forEach(el => el.oninput = el.onchange = () => { cfg.stages[+el.dataset.s][el.dataset.k] = el.value; });
     document.querySelectorAll("[data-up]").forEach(b => b.onclick = () => { const i = +b.dataset.up; [cfg.stages[i - 1], cfg.stages[i]] = [cfg.stages[i], cfg.stages[i - 1]]; draw(); });
     document.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { cfg.stages.splice(+b.dataset.del, 1); draw(); });
@@ -741,7 +841,7 @@ async function settings() {
     document.querySelectorAll("[data-rot]").forEach(b => b.onclick = act(async () => showSecret(await api(`/api/engines/${b.dataset.rot}/rotate`, { method: "POST" }))));
     document.querySelectorAll("[data-edel]").forEach(b => b.onclick = act(async () => {
       const k = b.dataset.edel;
-      if (cfg.stages.some(s => s.engine === k)) { toast("Detach this engine from its stage first (Deployment chain tab)", true); return; }
+      if (cfg.stages.some(s => s.engines.includes(k))) { toast("Detach this engine from its stage first (Deployment chain tab)", true); return; }
       cfg.engines = cfg.engines.filter(e => e.key !== k); await save();
     }));
   };
@@ -756,7 +856,15 @@ async function settings() {
 }
 
 applyBrand();
-S.token ? act(signIn)(S.token) : renderSignIn();
+(function boot() {
+  // Company sign-in returns here with the session (or an error) in the URL fragment,
+  // which browsers never send to servers or put in logs.
+  const frag = new URLSearchParams(location.hash.slice(1));
+  if (frag.has("session") || frag.has("sso_error")) history.replaceState(null, "", location.pathname);
+  if (frag.get("session")) return act(signIn)(frag.get("session"));
+  if (frag.get("sso_error")) { renderSignIn(); return toast(frag.get("sso_error"), true); }
+  S.token ? act(signIn)(S.token) : renderSignIn();
+})();
 </script>
 </body>
 </html>

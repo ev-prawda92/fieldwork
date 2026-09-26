@@ -6,8 +6,8 @@ objects into each engine's inputs and its outputs back into findings. Nothing
 in *_core knows Fieldwork exists, so each engine can keep evolving in its own
 repo and be re-vendored.
 
-Stage engines that are not wired yet are declared with status "planned" so the
-console can say so plainly instead of showing canned data.
+The five stage engines (Discover, Integrate, Test, Go-live, Value) live in
+stages.py and share one input/output shape with customer-built engines.
 """
 
 from __future__ import annotations
@@ -21,20 +21,25 @@ from .threshold_core.profile import Evidence, Profile
 from .threshold_core.score import Status, Verdict, score
 
 REGISTRY = {
-    "sendero":     {"name": "Sendero",      "status": "live", "builtin": True,
+    "sendero":     {"name": "Sendero", "status": "live",
                     "does": "Classifies a friction point as BUILD vs TRAINING from per-user performance data"},
-    "threshold":   {"name": "Threshold",    "status": "live",
-                    "does": "Scores bench people against a deployment's staffing needs, gate by gate, with citations"},
-    "cortex":      {"name": "Cortex",       "status": "planned",
-                    "does": "Agent permissions, scoped credentials and human approval gates for integrations"},
-    "census":      {"name": "Interface Census + advisory engine", "status": "planned",
-                    "does": "Systems inventory, evidence gaps, findings memo"},
-    "conformance": {"name": "Conformance harness", "status": "planned",
-                    "does": "Runs the agent conformance suite against customer configs"},
-    "golive":      {"name": "Sendero Go-Live Command Center", "status": "planned",
-                    "does": "Cutover checklist, issue triage, command-center stand-down"},
-    "attribution": {"name": "Coyote attribution", "status": "planned",
-                    "does": "Attributes delay and value to causes, confirmed in a ledger"},
+    "threshold":   {"name": "Threshold", "status": "live",
+                    "does": "Scores people against a deployment's staffing needs, gate by gate, with citations"},
+    "census":      {"name": "Census", "status": "live", "input": "csv",
+                    "does": "Checks the systems inventory for ownership, access, documentation and data-control gaps, and writes the findings memo",
+                    "input_hint": "CSV: system, owner, data_class, interface, access, documented, controls"},
+    "cortex":      {"name": "Cortex authority check", "status": "live", "input": "json",
+                    "does": "Runs the agent's delegated authority through Cortex against expected scenarios and flags risky grants",
+                    "input_hint": 'JSON: {"profile": {Cortex authority profile}, "scenarios": [{"name", "request", "expect"}]}'},
+    "conformance": {"name": "Conformance", "status": "live", "input": "csv",
+                    "does": "Scores test cases by category against a pass bar; any critical miss fails the stage",
+                    "input_hint": "CSV: case_id, category, expected, actual, critical   (optional line: # threshold: 0.95)"},
+    "golive":      {"name": "Go-live command center", "status": "live", "input": "csv",
+                    "does": "Reads the issue log and decides whether the command center can stand down",
+                    "input_hint": "CSV: id, severity, status, opened_at, resolved_at, area   (optional: # max_open_sev2: 2)"},
+    "attribution": {"name": "Value attribution", "status": "live", "input": "json",
+                    "does": "Value delivered against baseline, and delay days attributed to customer, vendor or third party",
+                    "input_hint": 'JSON: {"metric", "baseline", "current", "volume_per_month", "cost_per_hour", "planned_days", "actual_days", "delays": [...]}'},
     "none":        {"name": "No engine", "status": "n/a", "does": ""},
 }
 

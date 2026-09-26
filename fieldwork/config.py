@@ -54,6 +54,9 @@ ACTIONS = {
     "bench.match":        "Match people to a deployment's staffing needs",
     "people.read":        "See the team roster and workload",
     "people.manage":      "Add people and change their roles",
+    "task.view_internal": "See internal tasks (not just ones shared with the customer)",
+    "finding.view_internal": "See internal findings (not just ones shared with the customer)",
+    "customer.share":     "Share tasks and findings with the customer",
     "audit.read":         "Read the audit trail",
     "audit.verify":       "Verify the audit hash chain",
     "engine.manage":      "Register and manage engines (scripts and integrations)",
@@ -92,6 +95,9 @@ DEFAULT_CONFIG: dict = {
         "audit.verify":       {"head": "all"},
         "engine.manage":      {"head": "all"},
         "config.edit":        {"head": "all"},
+        "task.view_internal": {"head": "all", "engagement_manager": "own", **{r: "own" for r in DOERS}},
+        "finding.view_internal": {"head": "all", "engagement_manager": "own", **{r: "own" for r in DOERS}},
+        "customer.share":     {"head": "all", "engagement_manager": "own"},
     },
     "views": {
         "head":                      ["kpis", "chain", "team", "findings"],
@@ -102,19 +108,21 @@ DEFAULT_CONFIG: dict = {
         "customer":                  ["chain"],
     },
     "stages": [
-        {"key": "discover",  "name": "Discover",  "engine": "census",
+        {"key": "discover",  "name": "Discover",  "engines": ["census"],
          "exit_criteria": "Systems inventory and evidence gaps written up and read out"},
-        {"key": "integrate", "name": "Integrate", "engine": "cortex",
+        {"key": "integrate", "name": "Integrate", "engines": ["cortex"],
          "exit_criteria": "Agents connected with scoped permissions and human gates"},
-        {"key": "test",      "name": "Test",      "engine": "conformance",
+        {"key": "test",      "name": "Test",      "engines": ["conformance"],
          "exit_criteria": "Conformance suite green on customer data"},
-        {"key": "golive",    "name": "Go-live",   "engine": "golive",
+        {"key": "golive",    "name": "Go-live",   "engines": ["golive"],
          "exit_criteria": "Cutover complete, command center stood down"},
-        {"key": "adopt",     "name": "Adopt",     "engine": "sendero",
+        {"key": "adopt",     "name": "Adopt",     "engines": ["sendero"],
          "exit_criteria": "Friction points classified build vs training and routed"},
-        {"key": "value",     "name": "Value",     "engine": "attribution",
+        {"key": "value",     "name": "Value",     "engines": ["attribution"],
          "exit_criteria": "Outcome measured and confirmed with the customer"},
     ],
+    "sso": {"enabled": False, "issuer": "", "client_id": "", "allowed_domains": [],
+            "jit_role": "", "required": False},
     "engines": [],   # customer-registered engines; see engines.py for shapes
     "fields": {
         "customer": [
@@ -176,6 +184,21 @@ def validate(cfg: dict, allow_http_engines: bool = False, known_urls: frozenset 
         raise ConfigError("branding.logo_url is too large (keep logos under ~150 KB)")
     out["branding"] = {"product_name": name, "accent": b["accent"].lower(), "logo_url": logo}
 
+    # company sign-in (validated against roles below)
+    sso = {**base["sso"], **(cfg.get("sso") or {})}
+    out["sso"] = {"enabled": bool(sso["enabled"]), "issuer": str(sso["issuer"]).strip().rstrip("/"),
+                  "client_id": str(sso["client_id"]).strip()[:200],
+                  "allowed_domains": [str(d).strip().lower().lstrip("@") for d in sso.get("allowed_domains") or []
+                                      if str(d).strip()][:20],
+                  "jit_role": str(sso.get("jit_role") or ""), "required": bool(sso["required"])}
+    if out["sso"]["enabled"]:
+        if not (_url_ok(out["sso"]["issuer"]) or (allow_http_engines and _url_ok(out["sso"]["issuer"], True))):
+            raise ConfigError("sso.issuer must be the identity provider's https issuer URL")
+        if not out["sso"]["client_id"]:
+            raise ConfigError("sso.client_id is required")
+    if out["sso"]["required"] and not out["sso"]["enabled"]:
+        raise ConfigError("sso.required needs sso.enabled")
+
     # roles
     roles = cfg.get("roles", base["roles"])
     if not isinstance(roles, list) or not 1 <= len(roles) <= 20:
@@ -189,6 +212,8 @@ def validate(cfg: dict, allow_http_engines: bool = False, known_urls: frozenset 
         seen.add(k)
         out["roles"].append({"key": k, "name": str(r.get("name") or k).strip()[:60]})
     role_keys = seen
+    if out["sso"]["jit_role"] and out["sso"]["jit_role"] not in role_keys:
+        raise ConfigError(f"sso.jit_role: unknown role {out['sso']['jit_role']!r}")
 
     # permissions
     perms = cfg.get("permissions", base["permissions"])
@@ -260,10 +285,16 @@ def validate(cfg: dict, allow_http_engines: bool = False, known_urls: frozenset 
         if k in sseen:
             raise ConfigError(f"stages: duplicate key {k!r}")
         sseen.add(k)
-        eng = s.get("engine", "none")
-        if eng not in engine_keys:
-            raise ConfigError(f"stages.{k}: unknown engine {eng!r}")
-        out["stages"].append({"key": k, "name": str(s.get("name") or k)[:40], "engine": eng,
+        engs = s.get("engines")
+        if engs is None:  # older single-engine shape
+            engs = [s["engine"]] if s.get("engine") not in (None, "none") else []
+        if not isinstance(engs, list) or len(engs) > 4:
+            raise ConfigError(f"stages.{k}: engines must be a list of up to 4")
+        engs = [e for e in dict.fromkeys(engs) if e != "none"]
+        bad = [e for e in engs if e not in engine_keys]
+        if bad:
+            raise ConfigError(f"stages.{k}: unknown engine(s) {bad}")
+        out["stages"].append({"key": k, "name": str(s.get("name") or k)[:40], "engines": engs,
                               "exit_criteria": str(s.get("exit_criteria", ""))[:280]})
 
     # fields
@@ -287,6 +318,31 @@ def validate(cfg: dict, allow_http_engines: bool = False, known_urls: frozenset 
             norm.append(item)
         out["fields"][scope] = norm
     return out
+
+
+# When a release adds an action, existing workspaces inherit it from the action
+# that best matches its intent, so nobody silently loses (or gains) access.
+DERIVE = {
+    "task.view_internal": "task.create",
+    "finding.view_internal": "engine.run",
+    "customer.share": "task.assign",
+}
+
+
+def upgrade(cfg: dict) -> dict:
+    """Bring a stored config up to the current schema without changing behavior."""
+    cfg = copy.deepcopy(cfg)
+    perms = cfg.setdefault("permissions", {})
+    for action in ACTIONS:
+        if action not in perms:
+            src = DERIVE.get(action)
+            perms[action] = dict(perms.get(src, {})) if src else {}
+    cfg.setdefault("sso", default()["sso"])
+    for st in cfg.get("stages", []):
+        if "engines" not in st:
+            e = st.pop("engine", "none")
+            st["engines"] = [] if e in (None, "none") else [e]
+    return cfg
 
 
 def stage_keys(cfg: dict) -> list[str]:

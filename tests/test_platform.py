@@ -1,25 +1,8 @@
 """The guarantees a buyer's security review will ask about, as tests."""
 
-import sqlite3
+from fieldwork.seed import northfield_adoption_csv
 
-import pytest
-from fastapi.testclient import TestClient
-
-from fieldwork.app import create_app
-from fieldwork.seed import DEMO_TOKENS, northfield_adoption_csv, seed
-
-
-@pytest.fixture()
-def client(tmp_path):
-    path = str(tmp_path / "fw.db")
-    seed(path)
-    c = TestClient(create_app(path))
-    c.db_path = path
-    return c
-
-
-def H(who):
-    return {"Authorization": f"Bearer {DEMO_TOKENS[who]}"}
+from .conftest import H
 
 
 def cfg(client):
@@ -221,9 +204,9 @@ def test_every_write_is_audited_and_chain_verifies(client):
 
 def test_tampering_is_detected(client):
     client.post("/api/deployments/dep_northfield/advance", headers=H("fde"), json={"to_stage": "value"})
-    raw = sqlite3.connect(client.db_path)
-    raw.execute("UPDATE audit SET detail_json='{\"to\":\"discover\"}' WHERE action='deployment.advance'")
-    raw.commit()
+    with client.conn.tx():
+        client.conn.execute("UPDATE audit SET detail_json=? WHERE action='deployment.advance'",
+                            ('{"to":"discover"}',))
     v = client.get("/api/audit/verify", headers=H("head")).json()
     assert v["ok"] is False and v["broken_at"] is not None
 

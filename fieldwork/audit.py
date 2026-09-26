@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
@@ -38,7 +37,7 @@ def entry_hash(prev_hash: str, tenant_id: str, at: str, actor_id: str,
     return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-def _head(conn: sqlite3.Connection, tenant_id: str) -> str:
+def _head(conn, tenant_id: str) -> str:
     row = conn.execute(
         "SELECT hash FROM audit WHERE tenant_id=? ORDER BY seq DESC LIMIT 1",
         (tenant_id,),
@@ -46,10 +45,13 @@ def _head(conn: sqlite3.Connection, tenant_id: str) -> str:
     return row["hash"] if row else GENESIS
 
 
-def record(conn: sqlite3.Connection, tenant_id: str, actor_id: str,
+def record(conn, tenant_id: str, actor_id: str,
            action: str, subject: str, detail: dict | None = None) -> str:
     """Append one entry. Call inside db.tx() with the change it describes."""
     detail = detail or {}
+    if getattr(conn, "dialect", "sqlite") == "postgres":
+        # Serialize this tenant's chain across API processes until commit.
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (tenant_id,))
     at = now()
     prev = _head(conn, tenant_id)
     h = entry_hash(prev, tenant_id, at, actor_id, action, subject, detail)
@@ -61,7 +63,7 @@ def record(conn: sqlite3.Connection, tenant_id: str, actor_id: str,
     return h
 
 
-def verify(conn: sqlite3.Connection, tenant_id: str) -> dict:
+def verify(conn, tenant_id: str) -> dict:
     rows = conn.execute(
         "SELECT * FROM audit WHERE tenant_id=? ORDER BY seq", (tenant_id,)
     ).fetchall()

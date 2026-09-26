@@ -5,23 +5,16 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-from fastapi.testclient import TestClient
 
 from fieldwork import plugins
-from fieldwork.app import create_app
-from fieldwork.seed import DEMO_PUSH_TOKEN, DEMO_TOKENS, READINESS_CHECKLIST, seed
+from fieldwork.seed import DEMO_PUSH_TOKEN, READINESS_CHECKLIST
+
+from .conftest import H
 
 
-def H(who):
-    return {"Authorization": f"Bearer {DEMO_TOKENS[who]}"}
-
-
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
+@pytest.fixture(autouse=True)
+def _private_engines_ok(monkeypatch):
     monkeypatch.setenv("FIELDWORK_ALLOW_PRIVATE_ENGINES", "1")
-    path = str(tmp_path / "fw.db")
-    seed(path)
-    return TestClient(create_app(path))
 
 
 @pytest.fixture()
@@ -92,12 +85,9 @@ def test_ssrf_guard_blocks_private_hosts_in_saas_mode(monkeypatch):
         plugins.call_webhook("https://169.254.169.254/latest", "s", {}, allow_private=False)
 
 
-def test_saas_mode_requires_https_engines(tmp_path, monkeypatch):
+def test_saas_mode_requires_https_engines(client, monkeypatch):
     monkeypatch.delenv("FIELDWORK_ALLOW_PRIVATE_ENGINES", raising=False)
-    path = str(tmp_path / "fw.db")
-    seed(path)
-    c = TestClient(create_app(path))
-    r = c.post("/api/engines", headers=H("head"), json={
+    r = client.post("/api/engines", headers=H("head"), json={
         "key": "plain", "kind": "webhook", "name": "Plain", "url": "http://example.com/"})
     assert r.status_code == 422
 

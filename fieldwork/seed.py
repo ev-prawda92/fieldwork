@@ -9,6 +9,9 @@ white-labeled as "Meridian Deploy", its own go-live readiness script plugged in
 as a webhook engine on the Go-live stage, and a latency probe that pushes
 results in from inside a customer's environment.
 
+Some tasks and one confirmed value readout are shared with the customer;
+everything else stays internal.
+
 A second tenant (Orbital Labs) exists so the demo and tests can show that
 workspaces are isolated.
 
@@ -20,7 +23,8 @@ from __future__ import annotations
 import json
 import random
 
-from . import audit, config, db
+from . import audit, config, crypto, db
+from .engines import stages
 from .app import token_hash
 
 DEMO_TOKENS = {
@@ -147,10 +151,102 @@ def meridian_config() -> dict:
         {"key": "latency_probe", "kind": "push", "name": "Latency probe",
          "does": "Runs inside the customer's environment and posts agent latency against SLO."},
     ]
-    for s in cfg["stages"]:
-        if s["key"] == "golive":
-            s["engine"] = "readiness"
+    for st in cfg["stages"]:
+        if st["key"] == "golive":
+            st["engines"] = ["golive", "readiness"]
     return config.validate(cfg, allow_http_engines=True)
+
+REDLINE_CENSUS = """system,owner,data_class,interface,access,documented,controls
+MercuryGate TMS,Redline IT (J. Ortiz),internal,api,granted,yes,sso; audit logging
+Carrier portal (vendor-hosted),,internal,ui,requested,no,
+NetSuite ERP,Finance systems (A. Patel),confidential,api,granted,yes,sso; audit logging
+Disputes inbox (Microsoft 365),Ops (K. Lee),confidential,api,requested,yes,sso
+Rate database,Pricing (D. Wu),internal,db,none,no,
+Claims archive (SharePoint),Ops (K. Lee),regulated,api,granted,no,sso"""
+
+HARBORVIEW_AUTHORITY = json.dumps({
+    "profile": {
+        "status": "active", "default_decision": "BLOCK",
+        "credentials": [{"name": "prior-auth-policy-evaluation", "status": "valid",
+                         "expires_at": "2027-09-01T00:00:00Z"}],
+        "privileges": [
+            {"action": "integration.payer.submit_request", "effect": "allow",
+             "environments": ["production"], "data_scopes": ["assigned_commercial_members"],
+             "target_systems": ["payer"], "required_credentials": ["prior-auth-policy-evaluation"],
+             "required_evidence_types": ["benefit_policy", "clinical_documentation"],
+             "min_evidence_items": 2, "requires_human_review": True, "max_actions_per_hour": 10,
+             "constraints": ["Retain the Cortex attestation with the case record"]},
+            {"action": "ehr.write_intake_note", "effect": "allow", "environments": ["production"],
+             "target_systems": ["ehr"]},
+        ]},
+    "scenarios": [
+        {"name": "Complete packet, no reviewer yet", "expect": "HUMAN_REVIEW",
+         "request": {"action": "integration.payer.submit_request", "environment": "production",
+                     "data_scope": "assigned_commercial_members", "target_system": "payer",
+                     "evidence": [{"type": "benefit_policy"}, {"type": "clinical_documentation"}]}},
+        {"name": "Complete packet, reviewer approved", "expect": "ALLOW_WITH_LIMITS",
+         "request": {"action": "integration.payer.submit_request", "environment": "production",
+                     "data_scope": "assigned_commercial_members", "target_system": "payer",
+                     "evidence": [{"type": "benefit_policy"}, {"type": "clinical_documentation"}],
+                     "approval": {"status": "approved"}}},
+        {"name": "Missing clinical documentation", "expect": "REQUEST_MORE_EVIDENCE",
+         "request": {"action": "integration.payer.submit_request", "environment": "production",
+                     "data_scope": "assigned_commercial_members", "target_system": "payer",
+                     "evidence": [{"type": "benefit_policy"}]}},
+        {"name": "Tries it from staging", "expect": "BLOCK",
+         "request": {"action": "integration.payer.submit_request", "environment": "staging",
+                     "data_scope": "assigned_commercial_members", "target_system": "payer",
+                     "evidence": [{"type": "benefit_policy"}, {"type": "clinical_documentation"}]}},
+        {"name": "Cancels a request (never granted)", "expect": "BLOCK",
+         "request": {"action": "integration.payer.cancel_request", "environment": "production"}},
+    ]}, indent=2)
+
+CASTELLAN_CONFORMANCE = """# threshold: 0.95
+case_id,category,expected,actual,critical
+R-01,routing,Auto physical damage,Auto physical damage,no
+R-02,routing,Property water,Property water,no
+R-03,routing,Bodily injury,Bodily injury,yes
+R-04,routing,Auto glass,Auto glass,no
+R-05,routing,Property fire,Property - fire,no
+S-01,severity,High,High,yes
+S-02,severity,Low,Low,no
+S-03,severity,Medium,Medium,no
+S-04,severity,High,High,yes
+F-01,fraud_flag,flag,flag,yes
+F-02,fraud_flag,clear,clear,no
+F-03,fraud_flag,flag,clear,yes
+F-04,fraud_flag,clear,clear,no
+E-01,extraction,4210.50,4210.50,no
+E-02,extraction,1875,1875.00,no
+E-03,extraction,12999.99,13000,no
+E-04,extraction,2024-11-03,2024-11-03,no
+E-05,extraction,POL-883201,POL-883201,no"""
+
+CASTELLAN_ISSUES = """# max_open_sev2: 2
+id,severity,status,opened_at,resolved_at,area
+INC-101,sev2,resolved,2026-10-20T08:10,2026-10-20T11:40,routing
+INC-102,sev3,resolved,2026-10-20T09:05,2026-10-20T15:00,ui
+INC-103,sev1,resolved,2026-10-20T10:30,2026-10-20T12:05,model gateway
+INC-104,sev2,resolved,2026-10-20T13:15,2026-10-21T09:00,extraction
+INC-105,sev3,open,2026-10-20T16:45,,ui
+INC-106,sev2,resolved,2026-10-21T07:50,2026-10-21T10:10,routing
+INC-107,sev3,resolved,2026-10-21T09:20,2026-10-21T13:30,training
+INC-108,sev2,open,2026-10-21T14:05,,extraction
+INC-109,sev4,open,2026-10-21T18:40,,ui"""
+
+NORTHFIELD_VALUE = json.dumps({
+    "metric": "minutes per invoice exception", "baseline": 11.2, "current": 7.4, "lower_is_better": True,
+    "volume_per_month": 5200, "cost_per_hour": 38, "planned_days": 60, "actual_days": 78,
+    "delays": [
+        {"event": "Customer security review of the model gateway", "days": 9, "cause": "customer"},
+        {"event": "Our NetSuite connector rework", "days": 4, "cause": "vendor"},
+        {"event": "NetSuite sandbox refresh window", "days": 3, "cause": "third_party"},
+    ]}, indent=2)
+
+SAMPLE_INPUTS = {
+    "census": REDLINE_CENSUS, "cortex": HARBORVIEW_AUTHORITY, "conformance": CASTELLAN_CONFORMANCE,
+    "golive": CASTELLAN_ISSUES, "attribution": NORTHFIELD_VALUE, "readiness": READINESS_CHECKLIST,
+}
 
 
 def northfield_adoption_csv(seed: int = 7) -> str:
@@ -171,30 +267,37 @@ def northfield_adoption_csv(seed: int = 7) -> str:
     return "\n".join(lines)
 
 
-def seed(db_file: str) -> dict:
-    conn = db.connect(db_file)
+def seed(db_url: str) -> dict:
+    """Wipe the database at db_url and build the demo workspace."""
+    conn = db.connect(db_url)
+    db.reset(conn)
     db.init(conn)
     ts = audit.now()
     T = "ten_meridian"
 
+    def ins(table: str, **cols):
+        conn.execute(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                     tuple(cols.values()))
+
     with db.tx(conn):
-        conn.execute("INSERT INTO tenants VALUES (?,?,?,?)", (T, "Meridian AI", json.dumps(meridian_config()), ts))
-        conn.execute("INSERT INTO tenants VALUES (?,?,?,?)",
-                     ("ten_orbital", "Orbital Labs", json.dumps(config.default()), ts))
+        ins("tenants", id=T, name="Meridian AI", slug="meridian", config_json=json.dumps(meridian_config()),
+            created_at=ts)
+        ins("tenants", id="ten_orbital", name="Orbital Labs", slug="orbital",
+            config_json=json.dumps(config.default()), created_at=ts)
 
-        for i, (uid, name, role, tkey, prof) in enumerate(PEOPLE):
+        for uid, name, role, tkey, prof in PEOPLE:
             tok = DEMO_TOKENS[tkey] if tkey else f"demo-{uid}-meridian"
-            conn.execute("INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?)",
-                         (uid, T, name, f"{name.split()[0].lower()}@meridian.example", role, None,
-                          token_hash(tok), json.dumps(prof), ts))
-        conn.execute("INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?)",
-                     ("usr_orb", "ten_orbital", "Ines Duarte", "ines@orbital.example", "head", None,
-                      token_hash(DEMO_TOKENS["other_tenant"]), "{}", ts))
+            ins("users", id=uid, tenant_id=T, name=name, email=f"{name.split()[0].lower()}@meridian.example",
+                role=role, manager_id=None, token_hash=token_hash(tok), profile_json=json.dumps(prof),
+                created_at=ts)
+        ins("users", id="usr_orb", tenant_id="ten_orbital", name="Ines Duarte", email="ines@orbital.example",
+            role="head", manager_id=None, token_hash=token_hash(DEMO_TOKENS["other_tenant"]),
+            profile_json="{}", created_at=ts)
 
-        conn.execute("INSERT INTO engine_credentials VALUES (?,?,?,?,?)",
-                     (T, "readiness", DEMO_ENGINE_SECRET, None, ts))
-        conn.execute("INSERT INTO engine_credentials VALUES (?,?,?,?,?)",
-                     (T, "latency_probe", None, token_hash(DEMO_PUSH_TOKEN), ts))
+        ins("engine_credentials", tenant_id=T, engine_key="readiness", secret=crypto.encrypt(DEMO_ENGINE_SECRET),
+            token_hash=None, created_at=ts)
+        ins("engine_credentials", tenant_id=T, engine_key="latency_probe", secret=None,
+            token_hash=token_hash(DEMO_PUSH_TOKEN), created_at=ts)
 
         customers = [
             ("cus_northfield", "Northfield Supply Co.", "Distribution", {"arr": 420000, "exec_sponsor": "CFO, R. Albrecht"}),
@@ -203,9 +306,10 @@ def seed(db_file: str) -> dict:
             ("cus_redline", "Redline Logistics", "Logistics", {"arr": 150000}),
         ]
         for cid, name, ind, fields in customers:
-            conn.execute("INSERT INTO customers VALUES (?,?,?,?,?,?)", (cid, T, name, ind, json.dumps(fields), ts))
-        conn.execute("INSERT INTO customers VALUES (?,?,?,?,?,?)",
-                     ("cus_orb1", "ten_orbital", "Private Orbital Customer", "Aerospace", "{}", ts))
+            ins("customers", id=cid, tenant_id=T, name=name, industry=ind, fields_json=json.dumps(fields),
+                created_at=ts)
+        ins("customers", id="cus_orb1", tenant_id="ten_orbital", name="Private Orbital Customer",
+            industry="Aerospace", fields_json="{}", created_at=ts)
 
         deps = [
             ("dep_northfield", "cus_northfield", "AP exception agent", "adopt", "at_risk", "usr_marcus",
@@ -219,44 +323,56 @@ def seed(db_file: str) -> dict:
              ["usr_rosa", "usr_sam"], {"tier": "Pilot"}, ""),
         ]
         for did, cid, name, stage, health, lead, members, fields, staffing in deps:
-            conn.execute("INSERT INTO deployments VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                         (did, T, cid, name, stage, health, lead, json.dumps(fields), staffing, ts, ts))
+            ins("deployments", id=did, tenant_id=T, customer_id=cid, name=name, stage=stage, health=health,
+                lead_id=lead, fields_json=json.dumps(fields), staffing_req=staffing, created_at=ts, updated_at=ts)
             for m in members:
-                conn.execute("INSERT INTO deployment_members VALUES (?,?)", (did, m))
-            conn.execute("INSERT INTO stage_events (tenant_id, deployment_id, from_stage, to_stage,"
-                         " actor_id, note, at) VALUES (?,?,?,?,?,?,?)",
-                         (T, did, None, stage, "usr_dana", "imported", ts))
+                ins("deployment_members", deployment_id=did, user_id=m)
+            ins("stage_events", tenant_id=T, deployment_id=did, from_stage=None, to_stage=stage,
+                actor_id="usr_dana", note="imported", at=ts)
             audit.record(conn, T, "usr_dana", "deployment.create", did, {"name": name, "stage": stage})
-        conn.execute("INSERT INTO deployments VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                     ("dep_orb1", "ten_orbital", "cus_orb1", "Orbital secret project", "discover",
-                      "on_track", "usr_orb", "{}", "", ts, ts))
+        ins("deployments", id="dep_orb1", tenant_id="ten_orbital", customer_id="cus_orb1",
+            name="Orbital secret project", stage="discover", health="on_track", lead_id="usr_orb",
+            fields_json="{}", staffing_req="", created_at=ts, updated_at=ts)
 
         tasks = [
-            ("dep_northfield", "adopt", "Run build-vs-training on invoice exception times", "usr_maya", "in_progress", "2026-09-29"),
-            ("dep_northfield", "adopt", "Walk Harrisburg AP lead through exception queue", "usr_rosa", "open", "2026-10-01"),
-            ("dep_northfield", "adopt", "Confirm 3-way-match tolerance config with customer IT", "usr_sam", "blocked", "2026-09-26"),
-            ("dep_northfield", "adopt", "Monthly value readout with CFO", "usr_marcus", "open", "2026-10-08"),
-            ("dep_harborview", "integrate", "Scope FHIR read permissions for intake agent", "usr_jordan", "in_progress", "2026-10-03"),
-            ("dep_harborview", "integrate", "Human approval gate on payer submissions", "usr_jordan", "open", "2026-10-10"),
-            ("dep_castellan", "golive", "Close security review of model gateway", "usr_lena", "blocked", "2026-09-24"),
-            ("dep_castellan", "golive", "Book exec go/no-go", "usr_maya", "open", "2026-10-02"),
-            ("dep_redline", "discover", "Systems inventory with Redline ops", "usr_rosa", "open", "2026-10-06"),
+            ("dep_northfield", "adopt", "Run build-vs-training on invoice exception times", "usr_maya", "in_progress", "2026-09-29", "internal"),
+            ("dep_northfield", "adopt", "Walk Harrisburg AP lead through exception queue", "usr_rosa", "open", "2026-10-01", "shared"),
+            ("dep_northfield", "adopt", "Confirm 3-way-match tolerance config with customer IT", "usr_sam", "blocked", "2026-09-26", "internal"),
+            ("dep_northfield", "adopt", "Monthly value readout with CFO", "usr_marcus", "open", "2026-10-08", "shared"),
+            ("dep_northfield", "adopt", "Send September AP exception export", "usr_ruth", "open", "2026-09-30", "shared"),
+            ("dep_harborview", "integrate", "Scope FHIR read permissions for intake agent", "usr_jordan", "in_progress", "2026-10-03", "internal"),
+            ("dep_harborview", "integrate", "Human approval gate on payer submissions", "usr_jordan", "open", "2026-10-10", "internal"),
+            ("dep_castellan", "golive", "Close security review of model gateway", "usr_lena", "blocked", "2026-09-24", "internal"),
+            ("dep_castellan", "golive", "Book exec go/no-go", "usr_maya", "open", "2026-10-02", "internal"),
+            ("dep_redline", "discover", "Systems inventory with Redline ops", "usr_rosa", "open", "2026-10-06", "internal"),
         ]
-        for i, (did, stage, title, who, status, due) in enumerate(tasks, 1):
+        for i, (did, stage, title, who, status, due, vis) in enumerate(tasks, 1):
             tid = f"tsk_{i:03d}"
-            conn.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                         (tid, T, did, stage, title, who, status, due, "usr_marcus", ts, ts))
+            ins("tasks", id=tid, tenant_id=T, deployment_id=did, stage=stage, title=title, assignee_id=who,
+                status=status, due=due, created_by="usr_marcus", created_at=ts, updated_at=ts, visibility=vis)
             audit.record(conn, T, "usr_marcus", "task.create", tid,
-                         {"deployment": did, "assignee": who, "title": title})
+                         {"deployment": did, "assignee": who, "title": title, "visibility": vis})
 
-        # One result already pushed in by the customer-side latency probe.
-        result = {"p95_ms": 1840, "error_rate": 0.031, "calls": 12480, "slo_p95_ms": 1500}
+        # A pushed result from the customer-side latency probe, still internal.
         finding = {"summary": "p95 1840 ms against a 1500 ms SLO · 3.1% errors over 12,480 calls",
-                   "status": "fail", "result": result}
-        conn.execute("INSERT INTO findings VALUES (?,?,?,?,?,?,?,?,?,?)",
-                     ("fnd_probe1", T, "dep_castellan", "latency_probe", "Agent latency vs SLO (last 24h)",
-                      json.dumps(finding), None, None, "engine:latency_probe", ts))
+                   "status": "fail", "result": {"p95_ms": 1840, "error_rate": 0.031, "calls": 12480,
+                                                "slo_p95_ms": 1500}}
+        ins("findings", id="fnd_probe1", tenant_id=T, deployment_id="dep_castellan", engine="latency_probe",
+            title="Agent latency vs SLO (last 24h)", result_json=json.dumps(finding), confirmed_by=None,
+            confirmed_at=None, created_by="engine:latency_probe", created_at=ts, visibility="internal")
         audit.record(conn, T, "engine:latency_probe", "engine.run", "fnd_probe1",
                      {"engine": "latency_probe", "deployment": "dep_castellan",
                       "title": "Agent latency vs SLO (last 24h)"})
+
+        # A confirmed value readout, shared with the Northfield customer.
+        value = stages.attribution(NORTHFIELD_VALUE)
+        ins("findings", id="fnd_value1", tenant_id=T, deployment_id="dep_northfield", engine="attribution",
+            title="Value readout · August", result_json=json.dumps(value), confirmed_by="usr_marcus",
+            confirmed_at=ts, created_by="usr_maya", created_at=ts, visibility="shared")
+        audit.record(conn, T, "usr_maya", "engine.run", "fnd_value1",
+                     {"engine": "attribution", "deployment": "dep_northfield", "title": "Value readout · August"})
+        audit.record(conn, T, "usr_marcus", "finding.confirm", "fnd_value1",
+                     {"engine": "attribution", "deployment": "dep_northfield"})
+        audit.record(conn, T, "usr_marcus", "finding.share", "fnd_value1",
+                     {"visibility": "shared", "deployment": "dep_northfield"})
     return DEMO_TOKENS
