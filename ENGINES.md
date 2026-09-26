@@ -8,6 +8,10 @@ evolving on its own and gets re-vendored when it changes.
 |---|---|---|---|
 | Sendero | github.com/ev-prawda92/sendero | fcf30a2 | backend/sendero_engine/classify.py → engines/sendero_core/classify.py |
 | Threshold | github.com/ev-prawda92/threshold | fa3d4f1 | threshold/{classify,parse,profile,score}.py → engines/threshold_core/ |
+| Cortex | github.com/ev-prawda92/cortex | d0b1dcc | authorization.py → engines/cortex_core/authorization.py |
 
 The audit hash chain follows Arbiter's construction (github.com/ev-prawda92/arbiter),
 reimplemented per tenant in fieldwork/audit.py.
+
+The Census, Conformance, Go-live command center and Value attribution engines
+are native to Fieldwork (fieldwork/engines/stages.py).
