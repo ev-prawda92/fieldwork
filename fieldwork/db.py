@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS users (
     tenant_id   TEXT NOT NULL REFERENCES tenants(id),
     name        TEXT NOT NULL,
     email       TEXT NOT NULL,
-    role        TEXT NOT NULL,              -- fde | manager | director
+    role        TEXT NOT NULL,              -- a role key from the tenant's config
     manager_id  TEXT,
     token_hash  TEXT NOT NULL UNIQUE,
     profile_json TEXT NOT NULL DEFAULT '{}', -- bench evidence corpus (Threshold)
@@ -114,6 +114,18 @@ CREATE TABLE IF NOT EXISTS audit (
     detail_json TEXT NOT NULL,
     prev_hash  TEXT NOT NULL,
     hash       TEXT NOT NULL
+);
+
+-- Credentials for customer-registered engines. Webhook engines need the raw
+-- signing secret to sign calls (encrypt at rest with a KMS key in production);
+-- push engines store only a hash of their token.
+CREATE TABLE IF NOT EXISTS engine_credentials (
+    tenant_id   TEXT NOT NULL REFERENCES tenants(id),
+    engine_key  TEXT NOT NULL,
+    secret      TEXT,
+    token_hash  TEXT UNIQUE,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, engine_key)
 );
 
 CREATE INDEX IF NOT EXISTS ix_users_tenant ON users(tenant_id);

@@ -10,37 +10,36 @@
 :root{
   --bg:#0e1014; --panel:#12151a; --panel2:#171b21; --line:#252a32; --line2:#303642;
   --ink:#e8e6df; --dim:#9aa0a8; --faint:#6b717a;
-  --amber:#e8b25c; --amber2:#f3c97f; --green:#7cc38b; --red:#e07a6f; --blue:#7fa8d9; --violet:#b39ddb;
+  --accent:#e8b25c; --accent-ink:#1a1307; --accent-soft:#1d1a13;
+  --green:#7cc38b; --red:#e07a6f; --amber:#e8b25c; --blue:#7fa8d9; --violet:#b39ddb;
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
 body{background:var(--bg);color:var(--ink);font:14px/1.45 'IBM Plex Sans',system-ui,sans-serif}
 .mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
 button{font:inherit;cursor:pointer}
-a{color:var(--amber)}
+a{color:var(--accent)}
 input,select,textarea{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line2);border-radius:6px;padding:7px 9px}
 textarea{font-family:'IBM Plex Mono',monospace;font-size:12px}
-input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
+input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .btn{background:var(--panel2);border:1px solid var(--line2);color:var(--ink);border-radius:6px;padding:7px 12px}
-.btn:hover{border-color:var(--amber)}
-.btn.primary{background:var(--amber);border-color:var(--amber);color:#1a1307;font-weight:600}
-.btn.primary:hover{background:var(--amber2)}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.btn.primary:hover{filter:brightness(1.08)}
 .btn.small{padding:4px 9px;font-size:12px}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 
-/* shell */
-.app{display:grid;grid-template-columns:232px 1fr;height:100vh}
+.app{display:grid;grid-template-columns:240px 1fr;height:100vh}
 nav.side{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:18px 12px;gap:4px;overflow:auto}
 .brand{display:flex;align-items:center;gap:10px;padding:0 8px 16px}
+.brand img{width:26px;height:26px;object-fit:contain}
 .brand b{font-size:17px;letter-spacing:.2px}
 .brand small{display:block;color:var(--faint);font-size:11px}
 .navbtn{display:flex;justify-content:space-between;align-items:center;width:100%;text-align:left;background:none;border:0;color:var(--dim);padding:8px 10px;border-radius:6px}
 .navbtn:hover{background:var(--panel2);color:var(--ink)}
-.navbtn.on{background:var(--panel2);color:var(--ink);box-shadow:inset 2px 0 0 var(--amber)}
-.navbtn .ct{font-size:11px;color:var(--faint)}
-.side .sep{height:1px;background:var(--line);margin:10px 4px}
+.navbtn.on{background:var(--panel2);color:var(--ink);box-shadow:inset 2px 0 0 var(--accent)}
 .whoami{margin-top:auto;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:12px}
-.whoami .role{color:var(--amber);font-size:11px;text-transform:uppercase;letter-spacing:.6px}
+.whoami .role{color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.6px}
 main{overflow:auto;padding:26px 32px 60px}
 h1{font-size:22px;margin:0 0 4px;font-weight:600}
 h2{font-size:15px;margin:0 0 12px;font-weight:600}
@@ -52,25 +51,26 @@ h2{font-size:15px;margin:0 0 12px;font-weight:600}
 .kpi .l{color:var(--dim);font-size:12px}
 .pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--line2);color:var(--dim);white-space:nowrap}
 .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
-.on_track{color:var(--green)} .at_risk{color:var(--amber)} .blocked{color:var(--red)}
-.open{color:var(--dim)} .in_progress{color:var(--blue)} .done{color:var(--green)}
-.apply,.met{color:var(--green)} .arguable{color:var(--amber)} .open_question,.unknown{color:var(--blue)} .missing{color:var(--red)}
 .pill.plain::before{display:none}
+.on_track,.pass,.done,.apply,.met{color:var(--green)}
+.at_risk,.warn,.arguable{color:var(--amber)}
+.blocked,.fail,.missing{color:var(--red)}
+.in_progress,.info,.open_question,.unknown{color:var(--blue)}
+.open{color:var(--dim)}
 
-/* chain board */
 .board{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(160px,1fr);gap:10px;overflow-x:auto;padding-bottom:6px}
-.col{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:160px}
-.col h3{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:var(--dim);margin:2px 4px 10px;display:flex;justify-content:space-between}
+.col{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:150px}
+.col h3{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:var(--dim);margin:2px 4px 6px;display:flex;justify-content:space-between}
 .dcard{display:block;width:100%;text-align:left;background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:10px;margin-bottom:8px;color:var(--ink)}
-.dcard:hover{border-color:var(--amber)}
+.dcard:hover{border-color:var(--accent)}
 .dcard .c{color:var(--dim);font-size:12px}
 .dcard .t{font-weight:600;margin:2px 0 6px}
+.engine-tag{font-size:11px;color:var(--violet)}
 
-/* chain progress */
 .chain{display:flex;gap:4px;margin:14px 0 4px;flex-wrap:wrap}
 .step{flex:1;min-width:90px;padding:8px 10px;border:1px solid var(--line2);border-radius:6px;font-size:12px;color:var(--faint);background:var(--panel)}
 .step.past{color:var(--dim);border-color:#3b4f40}
-.step.now{color:var(--ink);border-color:var(--amber);background:#1d1a13}
+.step.now{color:var(--ink);border-color:var(--accent);background:var(--accent-soft)}
 .step small{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.6px}
 
 table{width:100%;border-collapse:collapse}
@@ -82,25 +82,30 @@ tr:last-child td{border-bottom:0}
 .muted{color:var(--dim)} .faint{color:var(--faint)}
 .two{grid-template-columns:1.4fr 1fr}
 @media (max-width:1100px){.two{grid-template-columns:1fr}}
-.engine-tag{font-size:11px;color:var(--violet)}
 .bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden;display:flex}
 .bar i{display:block;height:100%}
 .hash{font-size:11px;color:var(--faint);word-break:break-all}
-.toast{position:fixed;right:20px;bottom:20px;background:var(--panel2);border:1px solid var(--line2);padding:10px 14px;border-radius:8px;max-width:420px;box-shadow:0 8px 30px #0008;display:none}
+.toast{position:fixed;right:20px;bottom:20px;background:var(--panel2);border:1px solid var(--line2);padding:10px 14px;border-radius:8px;max-width:440px;box-shadow:0 8px 30px #0008;display:none;z-index:9}
 .toast.err{border-color:var(--red)}
 .empty{color:var(--faint);padding:18px;text-align:center;border:1px dashed var(--line2);border-radius:8px}
 details summary{cursor:pointer;color:var(--dim)}
-.perm td,.perm th{text-align:center}
-.perm td:first-child,.perm th:first-child{text-align:left}
+.matrix{overflow-x:auto}
+.matrix td,.matrix th{text-align:center;white-space:nowrap}
+.matrix td:first-child,.matrix th:first-child{text-align:left;white-space:normal;min-width:220px}
+.matrix select{padding:3px 4px;font-size:12px}
 label.f{display:grid;gap:4px;font-size:12px;color:var(--dim)}
+.secret{background:var(--accent-soft);border:1px solid var(--accent);border-radius:8px;padding:12px;margin-top:10px}
+.secret code{display:block;margin-top:6px;word-break:break-all;color:var(--ink)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+.tabs button{background:none;border:1px solid var(--line2);color:var(--dim);border-radius:99px;padding:5px 12px;font-size:13px}
+.tabs button.on{border-color:var(--accent);color:var(--ink);background:var(--accent-soft)}
 
-/* sign in */
-.signin{max-width:440px;margin:12vh auto;padding:0 16px}
+.signin{max-width:460px;margin:10vh auto;padding:0 16px}
 .signin .card{padding:24px}
 @media (max-width:760px){
   .app{grid-template-columns:1fr;height:auto}
   nav.side{flex-direction:row;flex-wrap:wrap;padding:10px}
-  .brand,.whoami,.side .sep{display:none}
+  .brand,.whoami{display:none}
   .navbtn{width:auto}
   main{padding:18px 16px 60px}
 }
@@ -112,19 +117,22 @@ label.f{display:grid;gap:4px;font-size:12px;color:var(--dim)}
 
 <script>
 "use strict";
-const S = { token: null, me: null, cfg: null, engines: null, view: "overview", dep: null };
+const S = { token: null, me: null, cfg: null, engines: null, view: "overview", dep: null, settingsTab: "branding" };
 try { S.token = sessionStorage.getItem("fw_token"); } catch (e) {}
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const $ = s => document.querySelector(s);
-const can = a => S.me && S.me.can.includes(a);
+const can = a => !!(S.me && S.me.can[a]);
+const canAll = a => !!(S.me && S.me.can[a] === "all");
 const stageName = k => (S.cfg.stages.find(s => s.key === k) || {name: k}).name;
-const pill = (cls, txt) => `<span class="pill ${esc(cls)}">${esc(txt ?? cls.replace(/_/g, " "))}</span>`;
+const roleName = k => (S.cfg.roles.find(r => r.key === k) || {name: k}).name;
+const pill = (cls, txt) => `<span class="pill ${esc(cls)}">${esc(txt ?? String(cls).replace(/_/g, " "))}</span>`;
 const fmtDate = s => s ? String(s).slice(0, 10) : "—";
+const brand = () => (S.cfg && S.cfg.branding) || { product_name: "Fieldwork", accent: "#e8b25c", logo_url: "" };
 
 function toast(msg, err) {
   const t = $("#toast"); t.textContent = msg; t.className = "toast" + (err ? " err" : "");
-  t.style.display = "block"; clearTimeout(toast._t); toast._t = setTimeout(() => t.style.display = "none", 4200);
+  t.style.display = "block"; clearTimeout(toast._t); toast._t = setTimeout(() => t.style.display = "none", 4500);
 }
 
 async function api(path, opts = {}) {
@@ -136,36 +144,56 @@ async function api(path, opts = {}) {
   let j = null; try { j = await r.json(); } catch (e) {}
   if (r.status === 401) { signOut(); throw new Error("signed out"); }
   if (!r.ok) {
-    const d = j && j.detail; const msg = Array.isArray(d) ? d.map(x => x.msg).join("; ") : (d || r.statusText);
-    throw new Error(msg);
+    const d = j && j.detail; throw new Error(Array.isArray(d) ? d.map(x => x.msg).join("; ") : (d || r.statusText));
   }
   return j;
 }
 const act = fn => async (...a) => { try { await fn(...a); } catch (e) { if (e.message !== "signed out") toast(e.message, true); } };
 
-function signOut() { S.token = null; S.me = null; try { sessionStorage.removeItem("fw_token"); } catch (e) {} renderSignIn(); }
+/* white-label: accent color, product name, logo */
+function applyBrand() {
+  const b = brand();
+  const hex = b.accent.replace("#", "");
+  const [r, g, bl] = [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16));
+  const lum = (0.299 * r + 0.587 * g + 0.114 * bl) / 255;
+  const root = document.documentElement.style;
+  root.setProperty("--accent", b.accent);
+  root.setProperty("--accent-ink", lum > 0.55 ? "#12140f" : "#ffffff");
+  root.setProperty("--accent-soft", `rgba(${r},${g},${bl},0.12)`);
+  document.title = b.product_name;
+}
+function logo(size = 26) {
+  const b = brand();
+  if (b.logo_url) return `<img src="${esc(b.logo_url)}" alt="" width="${size}" height="${size}">`;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 26 26" fill="none" stroke="var(--accent)" stroke-width="1.8" aria-hidden="true"><path d="M3 20 L9 8 L14 16 L18 10 L23 20"/><path d="M3 22 H23" stroke-opacity=".5"/></svg>`;
+}
+
+function signOut() { S.token = null; S.me = null; S.cfg = null; try { sessionStorage.removeItem("fw_token"); } catch (e) {} applyBrand(); renderSignIn(); }
 
 async function signIn(token) {
   S.token = token.trim();
   try { S.me = await api("/api/me"); } catch (e) { S.token = null; toast("That token wasn't accepted", true); return; }
   try { sessionStorage.setItem("fw_token", S.token); } catch (e) {}
-  const c = await api("/api/config"); S.cfg = c.config; S.meta = c; S.engines = c.engines;
+  await loadConfig();
   S.view = "overview"; S.dep = null; render();
+}
+async function loadConfig() {
+  const c = await api("/api/config"); S.cfg = c.config; S.meta = c; S.engines = c.engines; applyBrand();
 }
 
 async function renderSignIn() {
   let demos = [];
-  try { demos = await (await fetch("/api/demo")).json(); if (!Array.isArray(demos)) demos = []; } catch (e) {}
+  try { const r = await fetch("/api/demo"); if (r.ok) demos = await r.json(); } catch (e) {}
   $("#root").innerHTML = `
   <div class="signin">
-    <div class="brand" style="padding:0 0 18px">${logo()}<div><b>Fieldwork</b><small>Operating platform for FDE teams</small></div></div>
+    <div class="brand" style="padding:0 0 18px">${logo()}<div><b>${esc(brand().product_name)}</b><small>For deployment teams</small></div></div>
     <div class="card grid">
       <h2>Sign in</h2>
       <label class="f">Access token<input id="tok" type="password" autocomplete="off"></label>
       <button class="btn primary" id="go">Sign in</button>
-      ${demos.length ? `<div class="sep" style="height:1px;background:var(--line);margin:6px 0"></div>
-        <div class="muted" style="font-size:12px">Demo workspace · Meridian AI</div>
-        <div class="grid" style="gap:8px">${demos.map((d, i) => `<button class="btn" data-demo="${i}">${esc(d.label)}</button>`).join("")}</div>` : ""}
+      ${demos.length ? `<div style="height:1px;background:var(--line);margin:6px 0"></div>
+        <div class="muted" style="font-size:12px">Demo workspace · Meridian AI's deployment team</div>
+        <div class="grid" style="gap:8px">${demos.map((d, i) => `<button class="btn" data-demo="${i}" style="text-align:left">${esc(d.label)}</button>`).join("")}</div>` : ""}
     </div>
   </div>`;
   $("#go").onclick = () => signIn($("#tok").value);
@@ -173,26 +201,22 @@ async function renderSignIn() {
   document.querySelectorAll("[data-demo]").forEach(b => b.onclick = () => signIn(demos[+b.dataset.demo].token));
 }
 
-function logo() {
-  return `<svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="#e8b25c" stroke-width="1.8" aria-hidden="true"><path d="M3 20 L9 8 L14 16 L18 10 L23 20"/><path d="M3 22 H23" stroke-opacity=".5"/></svg>`;
-}
-
 function render() {
   const items = [
-    ["overview", "Overview", true],
-    ["deployments", can("deployment.read_all") ? "Deployments" : "My deployments", true],
-    ["tasks", "My work", true],
+    ["overview", "Home", true],
+    ["deployments", S.me.can["deployment.view"] === "all" ? "Deployments" : "My deployments", can("deployment.view")],
+    ["tasks", "My work", can("task.create")],
     ["team", "Team", can("people.read")],
     ["audit", "Audit trail", can("audit.read")],
-    ["settings", "Workspace settings", can("config.edit")],
+    ["settings", "Workspace settings", can("config.edit") || can("engine.manage")],
   ].filter(x => x[2]);
   $("#root").innerHTML = `
   <div class="app">
     <nav class="side" aria-label="Main">
-      <div class="brand">${logo()}<div><b>Fieldwork</b><small>${esc(S.me.tenant.name)}</small></div></div>
+      <div class="brand">${logo()}<div><b>${esc(brand().product_name)}</b><small>${esc(S.me.tenant.name)}</small></div></div>
       ${items.map(([k, l]) => `<button class="navbtn ${S.view === k || (k === "deployments" && S.view === "deployment") ? "on" : ""}" data-v="${k}">${esc(l)}</button>`).join("")}
       <div class="whoami">
-        <div class="role">${esc(S.me.user.role_label)}</div>
+        <div class="role">${esc(S.me.user.role_name)}</div>
         <div>${esc(S.me.user.name)}</div>
         <div class="faint">${esc(S.me.user.email)}</div>
         <button class="btn small" style="margin-top:8px" id="out">Sign out</button>
@@ -207,30 +231,29 @@ function render() {
 }
 
 function openDep(id) { S.view = "deployment"; S.dep = id; render(); }
-function bindDeps() { document.querySelectorAll("[data-dep]").forEach(b => b.onclick = () => openDep(b.dataset.dep)); }
+function bindDeps(scope = document) { scope.querySelectorAll("[data-dep]").forEach(b => b.onclick = e => { e.preventDefault(); openDep(b.dataset.dep); }); }
 
-/* ------------------------------------------------------------- overview */
+/* ------------------------------------------------------------- home */
 async function overview() {
-  const [d, deps] = await Promise.all([api("/api/dashboard"), api("/api/deployments")]);
-  const lead = can("deployment.read_all")
-    ? "Every deployment in the workspace, by stage."
-    : "The deployments you're on, and what's waiting for you.";
-  $("#main").innerHTML = `
-    <h1>${can("people.read") ? "Deployments at a glance" : "Good to see you, " + esc(S.me.user.name.split(" ")[0])}</h1>
-    <p class="sub">${lead}</p>
-    <div class="grid kpis">
-      <div class="card kpi"><div class="n">${d.deployments}</div><div class="l">Deployments</div></div>
-      <div class="card kpi"><div class="n at_risk">${d.health.at_risk}</div><div class="l">At risk</div></div>
-      <div class="card kpi"><div class="n blocked">${d.health.blocked}</div><div class="l">Blocked</div></div>
-      <div class="card kpi"><div class="n">${d.my_open_tasks}</div><div class="l">My open tasks${d.my_blocked ? ` · <span class="blocked">${d.my_blocked} blocked</span>` : ""}</div></div>
-      ${d.unconfirmed_findings != null ? `<div class="card kpi"><div class="n">${d.unconfirmed_findings}</div><div class="l">Findings awaiting confirmation</div></div>` : ""}
-    </div>
-    <h2 style="margin-top:26px">The chain</h2>
-    ${chainBoard(deps)}
-    ${d.team ? `<h2 style="margin-top:26px">Team load</h2>
-      <div class="card"><table><thead><tr><th>Person</th><th>Deployments</th><th>Open tasks</th></tr></thead><tbody>
-      ${d.team.map(p => `<tr><td>${esc(p.name)}</td><td>${p.deployments}</td><td>${p.open_tasks}</td></tr>`).join("")}
-      </tbody></table></div>` : ""}`;
+  const d = await api("/api/dashboard");
+  const w = d.widgets;
+  const parts = [];
+  if (w.includes("kpis") && d.kpis) parts.push(`<div class="grid kpis">
+      <div class="card kpi"><div class="n">${d.kpis.deployments}</div><div class="l">Deployments</div></div>
+      <div class="card kpi"><div class="n on_track">${d.kpis.on_track}</div><div class="l">On track</div></div>
+      <div class="card kpi"><div class="n at_risk">${d.kpis.at_risk}</div><div class="l">At risk</div></div>
+      <div class="card kpi"><div class="n blocked">${d.kpis.blocked}</div><div class="l">Blocked</div></div></div>`);
+  for (const k of w) {
+    if (k === "my_tasks" && d.my_tasks) parts.push(`<div><h2>My open tasks</h2><div class="card" id="w_tasks"></div></div>`);
+    if (k === "chain" && d.chain) parts.push(`<div><h2>${S.me.can["deployment.view"] === "all" ? "Every deployment, by stage" : "Your deployments, by stage"}</h2>${chainBoard(d.chain)}</div>`);
+    if (k === "findings" && d.findings) parts.push(`<div><h2>Findings awaiting confirmation</h2><div class="card">${d.findings.length ? `<table><tbody>${d.findings.map(f => `<tr><td><a href="#" data-dep="${esc(f.deployment_id)}">${esc(f.title)}</a><div class="faint" style="font-size:12px">${esc(f.deployment)}</div></td><td class="engine-tag">${esc((S.engines[f.engine] || {}).name || f.engine)}</td><td class="faint mono" style="font-size:12px">${fmtDate(f.created_at)}</td></tr>`).join("")}</tbody></table>` : `<div class="empty">Nothing waiting.</div>`}</div></div>`);
+    if (k === "team" && d.team) parts.push(`<div><h2>Team load</h2><div class="card"><table><thead><tr><th>Person</th><th>Role</th><th>Deployments</th><th>Open tasks</th></tr></thead><tbody>
+      ${d.team.map(p => `<tr><td>${esc(p.name)}</td><td class="muted">${esc(p.role_name)}</td><td>${p.deployments}</td><td>${p.open_tasks}</td></tr>`).join("")}</tbody></table></div></div>`);
+  }
+  $("#main").innerHTML = `<h1>Hi, ${esc(S.me.user.name.split(" ")[0])}</h1>
+    <p class="sub">${esc(S.me.user.role_name)} · ${esc(S.me.tenant.name)}</p>
+    <div class="grid" style="gap:26px">${parts.join("") || `<div class="empty">Your home screen has no sections. A workspace admin can add them in settings.</div>`}</div>`;
+  const wt = $("#w_tasks"); if (wt) renderTasks(d.my_tasks, wt, () => act(overview)(), true);
   bindDeps();
 }
 
@@ -239,10 +262,10 @@ function chainBoard(deps) {
     const here = deps.filter(d => d.stage === s.key);
     const eng = S.engines[s.engine] || {};
     return `<div class="col"><h3><span>${esc(s.name)}</span><span>${here.length}</span></h3>
-      <div class="engine-tag" style="margin:-6px 4px 10px">${esc(eng.name || "")}${eng.status === "planned" ? " · planned" : ""}</div>
+      <div class="engine-tag" style="margin:0 4px 10px">${s.engine === "none" ? "&nbsp;" : esc(eng.name || s.engine)}${eng.status === "planned" ? " · planned" : ""}</div>
       ${here.map(d => `<button class="dcard" data-dep="${esc(d.id)}">
         <div class="c">${esc(d.customer)}</div><div class="t">${esc(d.name)}</div>
-        <div class="row">${pill(d.health)}<span class="faint" style="font-size:11px">${d.members.map(m => esc(m.name.split(" ")[0])).join(", ")}</span></div>
+        <div class="row">${pill(d.health)}<span class="faint" style="font-size:11px">${d.members.filter(m => m.role !== "customer").map(m => esc(m.name.split(" ")[0])).join(", ")}</span></div>
       </button>`).join("") || `<div class="faint" style="font-size:12px;padding:4px">—</div>`}
     </div>`;
   }).join("")}</div>`;
@@ -251,27 +274,25 @@ function chainBoard(deps) {
 /* ---------------------------------------------------------- deployments */
 async function deployments() {
   const [deps, customers] = await Promise.all([api("/api/deployments"), api("/api/customers")]);
-  let people = [];
-  if (can("people.read")) people = await api("/api/people");
+  const people = can("people.read") ? await api("/api/people") : [];
   $("#main").innerHTML = `
-    <div class="row"><div><h1>${can("deployment.read_all") ? "Deployments" : "My deployments"}</h1>
+    <div class="row"><div><h1>${S.me.can["deployment.view"] === "all" ? "Deployments" : "My deployments"}</h1>
     <p class="sub">${deps.length} active</p></div><div class="spacer"></div>
     ${can("deployment.create") ? `<button class="btn primary" id="newdep">New deployment</button>` : ""}</div>
     <div id="newform"></div>
-    <div class="card"><table><thead><tr><th>Customer</th><th>Deployment</th><th>Stage</th><th>Health</th><th>Team</th><th>Tasks</th></tr></thead><tbody>
+    <div class="card"><table><thead><tr><th>Customer</th><th>Deployment</th><th>Stage</th><th>Health</th><th>Team</th></tr></thead><tbody>
     ${deps.map(d => `<tr><td>${esc(d.customer)}</td><td><a href="#" data-dep="${esc(d.id)}">${esc(d.name)}</a></td>
       <td>${esc(stageName(d.stage))}</td><td>${pill(d.health)}</td>
-      <td class="muted">${d.members.map(m => esc(m.name)).join(", ")}</td>
-      <td class="muted">${Object.entries(d.tasks).map(([k, v]) => `${v} ${k.replace("_", " ")}`).join(" · ") || "—"}</td></tr>`).join("")
-      || `<tr><td colspan="6"><div class="empty">You're not on any deployments yet.</div></td></tr>`}
+      <td class="muted">${d.members.map(m => esc(m.name)).join(", ")}</td></tr>`).join("")
+      || `<tr><td colspan="5"><div class="empty">You're not on any deployments yet.</div></td></tr>`}
     </tbody></table></div>`;
-  document.querySelectorAll("[data-dep]").forEach(a => a.onclick = e => { e.preventDefault(); openDep(a.dataset.dep); });
+  bindDeps();
   const nb = $("#newdep");
   if (nb) nb.onclick = () => {
     $("#newform").innerHTML = `<div class="card grid" style="margin-bottom:14px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
       <label class="f">Customer<select id="nd_c">${customers.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")}</select></label>
       <label class="f">Deployment name<input id="nd_n" placeholder="e.g. Invoice exception agent"></label>
-      <label class="f">Lead<select id="nd_l"><option value="">—</option>${people.filter(p => p.role === "fde").map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select></label>
+      <label class="f">Lead<select id="nd_l"><option value="">—</option>${people.filter(p => p.role !== "customer").map(p => `<option value="${esc(p.id)}">${esc(p.name)} · ${esc(p.role_name)}</option>`).join("")}</select></label>
       ${fieldInputs("deployment", {})}
       <div class="row" style="align-self:end"><button class="btn primary" id="nd_go">Open deployment</button></div>
     </div>`;
@@ -283,14 +304,15 @@ async function deployments() {
   };
 }
 
-function fieldInputs(scope, values) {
+function fieldInputs(scope, values, disabled) {
   return S.cfg.fields[scope].map(f => {
     const v = values[f.key] ?? "";
     const id = `fld_${scope}_${f.key}`;
+    const dis = disabled ? "disabled" : "";
     let input;
-    if (f.type === "select") input = `<select id="${id}"><option value=""></option>${f.options.map(o => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
-    else if (f.type === "bool") input = `<input id="${id}" type="checkbox" ${v ? "checked" : ""}>`;
-    else input = `<input id="${id}" type="${f.type === "number" ? "number" : f.type === "date" ? "date" : "text"}" value="${esc(v)}">`;
+    if (f.type === "select") input = `<select id="${id}" ${dis}><option value=""></option>${f.options.map(o => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
+    else if (f.type === "bool") input = `<input id="${id}" type="checkbox" ${v ? "checked" : ""} ${dis}>`;
+    else input = `<input id="${id}" ${dis} type="${f.type === "number" ? "number" : f.type === "date" ? "date" : "text"}" value="${esc(v)}">`;
     return `<label class="f">${esc(f.label)}${input}</label>`;
   }).join("");
 }
@@ -309,67 +331,56 @@ async function deploymentView() {
   const [d, tasks, findings] = await Promise.all([
     api(`/api/deployments/${id}`), api(`/api/tasks?deployment_id=${encodeURIComponent(id)}`),
     api(`/api/deployments/${id}/findings`)]);
-  let people = [];
-  if (can("people.read")) people = await api("/api/people");
+  const people = can("people.read") ? await api("/api/people") : [];
+  const yc = a => d.you_can.includes(a);
   const keys = S.cfg.stages.map(s => s.key);
   const idx = keys.indexOf(d.stage);
   const stage = S.cfg.stages[idx] || { name: d.stage, engine: "none", exit_criteria: "" };
-  const eng = S.engines[stage.engine] || {};
-  const isMember = d.members.some(m => m.id === S.me.user.id);
-  const canEdit = can("deployment.create") || isMember;
   const next = keys[idx + 1];
 
+  let mover = "";
+  if (yc("deployment.jump")) mover = `<select id="advto" aria-label="Move to stage">${S.cfg.stages.map(s => `<option value="${esc(s.key)}" ${s.key === next ? "selected" : ""} ${s.key === d.stage ? "disabled" : ""}>${esc(s.name)}</option>`).join("")}</select>
+      <input id="advnote" placeholder="Note (required to move back)" style="min-width:220px"><button class="btn primary" id="adv">Move</button>`;
+  else if (yc("deployment.advance") && next) mover = `<button class="btn primary" id="adv" data-to="${esc(next)}">Advance to ${esc(stageName(next))}</button>`;
+
   $("#main").innerHTML = `
-    <button class="btn small" id="back">← ${can("deployment.read_all") ? "Deployments" : "My deployments"}</button>
+    <button class="btn small" id="back">← Back</button>
     <div class="row" style="margin-top:14px"><div>
       <div class="muted">${esc(d.customer)}</div><h1>${esc(d.name)}</h1></div>
       <div class="spacer"></div>
-      ${canEdit ? `<select id="health" aria-label="Health">${["on_track", "at_risk", "blocked"].map(h => `<option value="${h}" ${h === d.health ? "selected" : ""}>${h.replace("_", " ")}</option>`).join("")}</select>` : pill(d.health)}
+      ${yc("deployment.edit") ? `<select id="health" aria-label="Health">${["on_track", "at_risk", "blocked"].map(h => `<option value="${h}" ${h === d.health ? "selected" : ""}>${h.replace("_", " ")}</option>`).join("")}</select>` : pill(d.health)}
     </div>
     <div class="chain">${S.cfg.stages.map((s, i) => `<div class="step ${i < idx ? "past" : i === idx ? "now" : ""}"><small>${i + 1}</small>${esc(s.name)}</div>`).join("")}</div>
-    <div class="card" style="margin-top:12px">
-      <div class="row"><div><div class="faint" style="font-size:11px;text-transform:uppercase;letter-spacing:.6px">Exit criteria · ${esc(stage.name)}</div>
-      <div>${esc(stage.exit_criteria || "None set")}</div></div><div class="spacer"></div>
-      ${can("deployment.advance") && (isMember || can("deployment.read_all")) ? `
-        ${S.me.user.role === "fde" ? (next ? `<button class="btn primary" id="adv" data-to="${esc(next)}">Advance to ${esc(stageName(next))}</button>` : "")
-        : `<select id="advto">${S.cfg.stages.map(s => `<option value="${esc(s.key)}" ${s.key === next ? "selected" : ""} ${s.key === d.stage ? "disabled" : ""}>${esc(s.name)}</option>`).join("")}</select>
-           <input id="advnote" placeholder="Note (required to move back)" style="min-width:220px">
-           <button class="btn primary" id="adv">Move</button>`}` : ""}
-      </div>
-    </div>
+    <div class="card" style="margin-top:12px"><div class="row">
+      <div><div class="faint" style="font-size:11px;text-transform:uppercase;letter-spacing:.6px">Exit criteria · ${esc(stage.name)}</div>
+      <div>${esc(stage.exit_criteria || "None set")}</div></div><div class="spacer"></div>${mover}</div></div>
 
     <div class="grid two" style="margin-top:14px">
       <div class="grid">
-        <div class="card">
-          <div class="row"><h2 style="margin:0">Engine · ${esc(eng.name || "none")}</h2><div class="spacer"></div>
-          ${eng.status === "live" ? pill("done", "live") : eng.status === "planned" ? `<span class="pill plain faint">planned</span>` : ""}</div>
-          <p class="muted" style="margin:6px 0 12px">${esc(eng.does || "")}</p>
-          <div id="enginePanel"></div>
-        </div>
+        <div class="card" id="enginePanel"></div>
         <div class="card"><h2>Findings</h2><div id="findings"></div></div>
       </div>
       <div class="grid">
-        <div class="card"><div class="row"><h2 style="margin:0">Tasks</h2></div>
+        <div class="card"><h2 style="margin:0">Tasks</h2>
           <div id="tasklist" style="margin-top:10px"></div>
-          ${can("task.create") && (isMember || S.me.user.role !== "fde") ? `
-          <div class="row" style="margin-top:12px">
+          ${yc("task.create") ? `<div class="row" style="margin-top:12px">
             <input id="nt" placeholder="New task" style="flex:1;min-width:160px">
-            ${can("task.assign") ? `<select id="nta"><option value="">Me</option>${people.filter(p => p.id !== S.me.user.id).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select>` : ""}
+            ${yc("task.assign") ? `<select id="nta" aria-label="Assignee"><option value="">Me</option>${d.members.filter(p => p.id !== S.me.user.id && p.role !== "customer").map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select>` : ""}
             <input id="ntd" type="date" aria-label="Due">
             <button class="btn" id="ntgo">Add</button></div>` : ""}
         </div>
-        <div class="card"><div class="row"><h2 style="margin:0">Team</h2></div>
-          <div style="margin-top:10px">${d.members.map(m => `<div class="row" style="padding:4px 0"><span>${esc(m.name)}</span>${m.id === d.lead_id ? `<span class="pill plain">lead</span>` : ""}<div class="spacer"></div>
-          ${can("deployment.staff") ? `<button class="btn small" data-rm="${esc(m.id)}">Remove</button>` : ""}</div>`).join("")}</div>
-          ${can("deployment.staff") ? `<div class="row" style="margin-top:8px"><select id="addm">${people.filter(p => !d.members.some(m => m.id === p.id)).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select><button class="btn small" id="addmgo">Add to team</button></div>` : ""}
+        <div class="card"><h2 style="margin:0">Team</h2>
+          <div style="margin-top:10px">${d.members.map(m => `<div class="row" style="padding:4px 0"><span>${esc(m.name)}</span><span class="faint" style="font-size:12px">${esc(roleName(m.role))}</span>${m.id === d.lead_id ? `<span class="pill plain">lead</span>` : ""}<div class="spacer"></div>
+          ${yc("deployment.staff") ? `<button class="btn small" data-rm="${esc(m.id)}">Remove</button>` : ""}</div>`).join("")}</div>
+          ${yc("deployment.staff") && people.length ? `<div class="row" style="margin-top:8px"><select id="addm" aria-label="Person">${people.filter(p => !d.members.some(m => m.id === p.id)).map(p => `<option value="${esc(p.id)}">${esc(p.name)} · ${esc(p.role_name)}</option>`).join("")}</select><button class="btn small" id="addmgo">Add to team</button></div>` : ""}
         </div>
-        ${S.cfg.fields.deployment.length ? `<div class="card grid"><h2 style="margin:0">Details</h2>${fieldInputs("deployment", d.fields)}
-          ${canEdit ? `<button class="btn small" id="savef" style="justify-self:start">Save details</button>` : ""}</div>` : ""}
+        ${S.cfg.fields.deployment.length ? `<div class="card grid"><h2 style="margin:0">Details</h2>${fieldInputs("deployment", d.fields, !yc("deployment.edit"))}
+          ${yc("deployment.edit") ? `<button class="btn small" id="savef" style="justify-self:start">Save details</button>` : ""}</div>` : ""}
         <div class="card"><h2>History</h2>${d.history.map(h => `<div style="padding:4px 0;font-size:12px"><span class="faint mono">${fmtDate(h.at)}</span> ${esc(h.actor)} → <b>${esc(stageName(h.to_stage))}</b>${h.note ? ` <span class="muted">· ${esc(h.note)}</span>` : ""}</div>`).join("")}</div>
       </div>
     </div>`;
 
-  $("#back").onclick = () => { S.view = "deployments"; S.dep = null; render(); };
+  $("#back").onclick = () => { S.view = can("deployment.view") ? "deployments" : "overview"; S.dep = null; render(); };
   const reload = () => act(deploymentView)();
   const h = $("#health"); if (h) h.onchange = act(async () => { await api(`/api/deployments/${id}`, { method: "PATCH", body: { health: h.value } }); toast("Health updated"); });
   const adv = $("#adv");
@@ -386,33 +397,41 @@ async function deploymentView() {
     reload();
   });
 
-  renderTasks(tasks, $("#tasklist"), reload);
-  renderFindings(findings, reload);
-  renderEngine(stage, eng, d, reload);
+  renderTasks(tasks, $("#tasklist"), reload, false, yc("task.update_any"));
+  renderFindings(findings, reload, yc("finding.confirm"));
+  renderEngine(stage, d, reload, yc);
 }
 
-function renderTasks(tasks, el, reload, showDep) {
+function renderTasks(tasks, el, reload, showDep, updateAny) {
   if (!tasks.length) { el.innerHTML = `<div class="empty">No tasks.</div>`; return; }
   el.innerHTML = `<table><tbody>${tasks.map(t => {
-    const mine = t.assignee_id === S.me.user.id || can("task.assign");
-    return `<tr><td style="width:40%">${esc(t.title)}${showDep ? `<div class="faint" style="font-size:12px">${esc(t.deployment)}</div>` : ""}</td>
+    const editable = t.assignee_id === S.me.user.id || updateAny;
+    return `<tr><td style="width:44%">${esc(t.title)}${showDep ? `<div class="faint" style="font-size:12px">${esc(t.deployment)}</div>` : ""}</td>
       <td class="muted">${esc(t.assignee || "—")}</td><td class="faint mono" style="font-size:12px">${fmtDate(t.due)}</td>
-      <td>${mine ? `<select data-task="${esc(t.id)}" aria-label="Status">${["open", "in_progress", "blocked", "done"].map(s => `<option value="${s}" ${s === t.status ? "selected" : ""}>${s.replace("_", " ")}</option>`).join("")}</select>` : pill(t.status)}</td></tr>`;
+      <td>${editable ? `<select data-task="${esc(t.id)}" aria-label="Status">${["open", "in_progress", "blocked", "done"].map(s => `<option value="${s}" ${s === t.status ? "selected" : ""}>${s.replace("_", " ")}</option>`).join("")}</select>` : pill(t.status)}</td></tr>`;
   }).join("")}</tbody></table>`;
   el.querySelectorAll("[data-task]").forEach(s => s.onchange = act(async () => {
     await api(`/api/tasks/${s.dataset.task}`, { method: "PATCH", body: { status: s.value } }); toast("Task updated"); reload();
   }));
 }
 
-function renderFindings(findings, reload) {
+function findingBody(f) {
+  const r = f.result;
+  if (f.engine === "sendero") return senderoSummary(r);
+  if (f.engine === "threshold") return `<span class="muted">${r.ranked.length} people scored · top: ${esc(r.ranked[0]?.name)} (${esc((r.ranked[0]?.verdict || "").replace("_", " "))})</span>`;
+  return `<div class="row">${pill(r.status)}<span>${esc(r.summary)}</span></div>`;
+}
+
+function renderFindings(findings, reload, mayConfirm) {
   const el = $("#findings");
   if (!findings.length) { el.innerHTML = `<div class="empty">No engine runs on this deployment yet.</div>`; return; }
   el.innerHTML = findings.map(f => `<div style="padding:10px 0;border-bottom:1px solid var(--line)">
-    <div class="row"><b>${esc(f.title)}</b><span class="engine-tag">${esc(f.engine)}</span><div class="spacer"></div>
+    <div class="row"><b>${esc(f.title)}</b><span class="engine-tag">${esc((S.engines[f.engine] || {}).name || f.engine)}</span><div class="spacer"></div>
     ${f.confirmed_by ? pill("done", "confirmed · " + f.confirmed_by_name)
-      : can("finding.confirm") && f.created_by !== S.me.user.id ? `<button class="btn small" data-confirm="${esc(f.id)}">Confirm</button>` : `<span class="pill plain faint">awaiting confirmation</span>`}</div>
+      : mayConfirm && f.created_by !== S.me.user.id ? `<button class="btn small" data-confirm="${esc(f.id)}">Confirm</button>` : `<span class="pill plain faint">awaiting confirmation</span>`}</div>
     <div class="faint" style="font-size:12px">${esc(f.created_by_name)} · ${fmtDate(f.created_at)}</div>
-    <div style="margin-top:6px">${f.engine === "sendero" ? senderoSummary(f.result) : f.engine === "threshold" ? `<span class="muted">${f.result.ranked.length} people scored · top: ${esc(f.result.ranked[0]?.name)} (${esc(f.result.ranked[0]?.verdict.replace("_", " "))})</span>` : ""}</div>
+    <div style="margin-top:6px">${findingBody(f)}</div>
+    ${!["sendero", "threshold"].includes(f.engine) && f.result.result && Object.keys(f.result.result).length ? `<details style="margin-top:4px"><summary style="font-size:12px">Details</summary><pre class="mono" style="font-size:11px;white-space:pre-wrap;color:var(--dim)">${esc(JSON.stringify(f.result.result, null, 2))}</pre></details>` : ""}
   </div>`).join("");
   el.querySelectorAll("[data-confirm]").forEach(b => b.onclick = act(async () => { await api(`/api/findings/${b.dataset.confirm}/confirm`, { method: "POST" }); toast("Finding confirmed into the record"); reload(); }));
 }
@@ -422,40 +441,49 @@ function senderoSummary(r) {
   const col = r.classification === "BUILD" ? "var(--red)" : r.classification === "TRAINING" ? "var(--blue)" : "var(--amber)";
   return `<div class="row"><b style="color:${col}">${esc(r.classification)}</b><span class="muted">${r.confidence_pct}% confidence · n=${r.n}</span></div>
     <div class="bar" style="margin:6px 0" title="build ${b}% / training ${100 - b}%"><i style="width:${b}%;background:var(--red)"></i><i style="width:${100 - b}%;background:var(--blue)"></i></div>
-    <div class="faint" style="font-size:11px" class="row">build ${b}% · training ${100 - b}%</div>`;
+    <div class="faint" style="font-size:11px">build ${b}% · training ${100 - b}%</div>`;
 }
 
-function renderEngine(stage, eng, d, reload) {
+function renderEngine(stage, d, reload, yc) {
   const el = $("#enginePanel");
-  const isMember = d.members.some(m => m.id === S.me.user.id);
-  const mayRun = can("engine.run") && (isMember || S.me.user.role !== "fde");
-  let html = "";
+  const eng = S.engines[stage.engine] || { name: "No engine", status: "n/a" };
+  const mayRun = yc("engine.run");
+  const head = `<div class="row"><h2 style="margin:0">Engine · ${esc(eng.name)}</h2><div class="spacer"></div>
+    ${eng.builtin === false ? `<span class="pill plain">your engine · ${esc(eng.kind)}</span>` : ""}
+    ${eng.status === "live" ? pill("done", "live") : eng.status === "planned" ? `<span class="pill plain faint">planned</span>` : ""}</div>
+    <p class="muted" style="margin:6px 0 12px">${esc(eng.does || "")}</p>`;
+  let body = "";
   if (stage.engine === "sendero") {
-    html = mayRun ? `<div class="grid" style="gap:8px">
+    body = mayRun ? `<div class="grid" style="gap:8px">
       <label class="f">Friction point<input id="se_t" placeholder="e.g. Invoice exception handling time"></label>
       <label class="f">Per-user data (CSV: one row per user, a metric column, cohort columns)<textarea id="se_csv" rows="6" placeholder="user_id,minutes,tenure_months,site"></textarea></label>
       <div class="row"><label class="f">Metric column<input id="se_m" style="width:190px"></label>
       <label class="f">Baseline<input id="se_b" type="number" step="any" style="width:100px"></label>
       <label class="f">Higher is worse<select id="se_h"><option value="1">yes</option><option value="0">no</option></select></label></div>
       <div class="row"><button class="btn primary" id="se_go">Classify</button><button class="btn" id="se_sample">Load sample data</button></div>
-      <div id="se_out"></div></div>` : `<div class="empty">Only this deployment's team can run it.</div>`;
+      <div id="se_out"></div></div>` : `<div class="empty">Engine runs on this deployment are done by the deployment team.</div>`;
+  } else if (eng.builtin === false && eng.kind === "webhook") {
+    body = mayRun ? `<div class="grid" style="gap:8px">
+      <label class="f">Input${eng.input_hint ? ` · <span class="faint">${esc(eng.input_hint)}</span>` : ""}<textarea id="cu_in" rows="8"></textarea></label>
+      <div class="row"><button class="btn primary" id="cu_go">Run ${esc(eng.name)}</button><button class="btn" id="cu_sample">Load sample</button></div>
+      <div id="cu_out"></div></div>` : `<div class="empty">Engine runs on this deployment are done by the deployment team.</div>`;
+  } else if (eng.builtin === false && eng.kind === "push") {
+    body = `<div class="empty">This engine runs in its own environment and posts results in. They appear under Findings.</div>`;
+  } else if (eng.status === "planned") {
+    body = `<div class="empty">${esc(eng.name)} isn't connected yet. Plug in your own engine for this stage in settings, or track the stage with tasks.</div>`;
+  } else if (stage.engine === "none") {
+    body = `<div class="empty">No engine on this stage.</div>`;
   }
-  // Bench matching (Threshold) is available at any stage to roles allowed to staff.
-  if (can("bench.match")) {
-    html += `<div style="${html ? "margin-top:18px;padding-top:14px;border-top:1px solid var(--line)" : ""}">
+  let bench = "";
+  if (yc("bench.match")) bench = `<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
       <div class="row"><b>Bench · Threshold</b><span class="muted" style="font-size:12px">who can staff this deployment</span></div>
       <details style="margin:8px 0"><summary>Staffing requirements</summary>
         <textarea id="th_req" rows="8" style="width:100%;margin-top:6px">${esc(d.staffing_req)}</textarea>
-        <button class="btn small" id="th_save">Save requirements</button></details>
+        ${yc("deployment.staff") ? `<button class="btn small" id="th_save">Save requirements</button>` : ""}</details>
       <button class="btn" id="th_go">Match bench</button><div id="th_out" style="margin-top:10px"></div></div>`;
-  }
-  if (!html) html = eng.status === "planned"
-    ? `<div class="empty">This stage's engine isn't connected yet. Tasks and stage tracking work now; the engine plugs in here.</div>`
-    : `<div class="empty">No engine on this stage.</div>`;
-  else if (stage.engine !== "sendero" && eng.status === "planned")
-    html = `<div class="empty" style="margin-bottom:10px">${esc(eng.name)} isn't connected yet.</div>` + html;
-  el.innerHTML = html;
+  el.innerHTML = head + body + bench;
 
+  const refreshFindings = async () => renderFindings(await api(`/api/deployments/${d.id}/findings`), reload, yc("finding.confirm"));
   const go = $("#se_go");
   if (go) {
     $("#se_sample").onclick = act(async () => {
@@ -472,14 +500,26 @@ function renderEngine(stage, eng, d, reload) {
       $("#se_out").innerHTML = `<div class="card" style="background:var(--panel2);margin-top:8px">${senderoSummary(x)}
         <p style="margin:10px 0 6px">${esc(x.recommendation)}</p>
         <div class="muted" style="font-size:12px">${esc(x.level1_dispersion.reading)}</div>
-        <div class="muted" style="font-size:12px;margin-top:4px">${esc(x.level2_explanatory.reading)}</div>
-        <div class="faint" style="font-size:11px;margin-top:6px">Cohorts · capability: ${esc(x.cohorts.capability.join(", ") || "none")} · configuration: ${esc(x.cohorts.config.join(", ") || "none")}</div></div>`;
-      toast("Saved as a finding, awaiting confirmation");
-      renderFindings(await api(`/api/deployments/${d.id}/findings`), reload);
+        <div class="muted" style="font-size:12px;margin-top:4px">${esc(x.level2_explanatory.reading)}</div></div>`;
+      toast("Saved as a finding, awaiting confirmation"); await refreshFindings();
+    });
+  }
+  const cg = $("#cu_go");
+  if (cg) {
+    $("#cu_sample").onclick = act(async () => { $("#cu_in").value = (await api(`/api/demo/sample-input/${stage.engine}`)).input; });
+    cg.onclick = act(async () => {
+      cg.disabled = true;
+      try {
+        const r = await api(`/api/deployments/${d.id}/engines/custom/${stage.engine}`, { method: "POST", body: { input: $("#cu_in").value } });
+        const x = r.result;
+        $("#cu_out").innerHTML = `<div class="card" style="background:var(--panel2);margin-top:8px"><div class="row">${pill(x.status)}<b>${esc(x.summary)}</b></div>
+          ${Object.keys(x.result || {}).length ? `<pre class="mono" style="font-size:11px;white-space:pre-wrap;color:var(--dim);margin:8px 0 0">${esc(JSON.stringify(x.result, null, 2))}</pre>` : ""}</div>`;
+        toast("Saved as a finding, awaiting confirmation"); await refreshFindings();
+      } finally { cg.disabled = false; }
     });
   }
   const ts = $("#th_save");
-  if (ts) ts.onclick = act(async () => { await api(`/api/deployments/${d.id}`, { method: "PATCH", body: { staffing_req: $("#th_req").value } }); d.staffing_req = $("#th_req").value; toast("Requirements saved"); });
+  if (ts) ts.onclick = act(async () => { await api(`/api/deployments/${d.id}`, { method: "PATCH", body: { staffing_req: $("#th_req").value } }); toast("Requirements saved"); });
   const tg = $("#th_go");
   if (tg) tg.onclick = act(async () => {
     const r = await api(`/api/deployments/${d.id}/engines/threshold`, { method: "POST" });
@@ -487,8 +527,7 @@ function renderEngine(stage, eng, d, reload) {
       <summary><span style="color:var(--ink)">${esc(p.name)}</span> ${pill(p.verdict)} <span class="faint" style="font-size:12px">${esc(p.summary)}</span></summary>
       <table style="margin-top:6px"><tbody>${p.findings.map(f => `<tr><td style="font-size:12px">${f.gate ? "<b>gate</b> · " : ""}${esc(f.requirement)}</td>
         <td>${pill(f.status)}</td><td class="faint" style="font-size:12px">${esc(f.detail)}${f.citations.length ? `<div class="mono">${f.citations.map(esc).join(", ")}</div>` : ""}</td></tr>`).join("")}</tbody></table></details>`).join("");
-    toast("Saved as a finding, awaiting confirmation");
-    renderFindings(await api(`/api/deployments/${d.id}/findings`), reload);
+    toast("Saved as a finding, awaiting confirmation"); await refreshFindings();
   });
 }
 
@@ -502,10 +541,26 @@ async function tasksView() {
 /* ---------------------------------------------------------------- team */
 async function team() {
   const p = await api("/api/people");
-  $("#main").innerHTML = `<h1>Team</h1><p class="sub">${p.length} people in ${esc(S.me.tenant.name)}</p>
+  const manage = can("people.manage");
+  $("#main").innerHTML = `<div class="row"><div><h1>Team</h1><p class="sub">${p.length} people in ${esc(S.me.tenant.name)}</p></div></div>
+    ${manage ? `<div class="card grid" style="margin-bottom:14px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
+      <label class="f">Name<input id="np_n"></label><label class="f">Email<input id="np_e" type="email"></label>
+      <label class="f">Role<select id="np_r">${S.cfg.roles.map(r => `<option value="${esc(r.key)}">${esc(r.name)}</option>`).join("")}</select></label>
+      <div class="row" style="align-self:end"><button class="btn primary" id="np_go">Add person</button></div>
+      <div id="np_out" style="grid-column:1/-1"></div></div>` : ""}
     <div class="card"><table><thead><tr><th>Name</th><th>Role</th><th>Deployments</th><th>Open tasks</th></tr></thead><tbody>
-    ${p.map(x => `<tr><td>${esc(x.name)}<div class="faint" style="font-size:12px">${esc(x.email)}</div></td><td>${esc(S.cfg.labels[x.role])}</td><td>${x.deployments}</td><td>${x.open_tasks}</td></tr>`).join("")}
+    ${p.map(x => `<tr><td>${esc(x.name)}<div class="faint" style="font-size:12px">${esc(x.email)}</div></td>
+      <td>${manage ? `<select data-role="${esc(x.id)}" aria-label="Role for ${esc(x.name)}">${S.cfg.roles.map(r => `<option value="${esc(r.key)}" ${r.key === x.role ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select>` : esc(x.role_name)}</td>
+      <td>${x.deployments}</td><td>${x.open_tasks}</td></tr>`).join("")}
     </tbody></table></div>`;
+  document.querySelectorAll("[data-role]").forEach(s => s.onchange = act(async () => {
+    await api(`/api/people/${s.dataset.role}`, { method: "PATCH", body: { role: s.value } }); toast("Role updated");
+  }));
+  const go = $("#np_go");
+  if (go) go.onclick = act(async () => {
+    const r = await api("/api/people", { method: "POST", body: { name: $("#np_n").value, email: $("#np_e").value, role: $("#np_r").value } });
+    $("#np_out").innerHTML = `<div class="secret"><b>Access token for ${esc($("#np_n").value)}</b> <span class="muted">· shown once; share it securely</span><code class="mono">${esc(r.token)}</code></div>`;
+  });
 }
 
 /* --------------------------------------------------------------- audit */
@@ -530,55 +585,177 @@ async function auditView() {
 
 /* ------------------------------------------------------------ settings */
 async function settings() {
-  const meta = await api("/api/config");
+  await loadConfig();
+  const meta = S.meta;
   const cfg = JSON.parse(JSON.stringify(meta.config));
-  const engOpts = Object.entries(meta.engines);
+  const engines = await api("/api/engines");
+  const tabs = [["branding", "Branding"], ["roles", "Roles & access"], ["views", "Home screens"], ["stages", "Deployment chain"], ["engines", "Engines"], ["fields", "Custom fields"]]
+    .filter(([k]) => k === "engines" ? can("engine.manage") : can("config.edit"));
+  if (!tabs.some(t => t[0] === S.settingsTab)) S.settingsTab = tabs[0][0];
+
+  const save = act(async () => {
+    const r = await api("/api/config", { method: "PUT", body: cfg });
+    S.cfg = r.config; S.me = await api("/api/me"); await loadConfig(); toast("Settings saved"); render();
+  });
+
   const draw = () => {
-    $("#main").innerHTML = `<h1>Workspace settings</h1><p class="sub">Your stages, roles, permissions and fields. Changes are validated and audited.</p>
-    <div class="grid">
-      <div class="card"><h2>Deployment chain</h2>
+    const t = S.settingsTab;
+    let body = "";
+    if (t === "branding") body = `<div class="card grid" style="max-width:640px">
+      <p class="muted" style="margin:0">White-label the platform for your team. Your people see your name, color and logo.</p>
+      <label class="f">Product name<input id="b_name" value="${esc(cfg.branding.product_name)}"></label>
+      <label class="f">Accent color<div class="row"><input id="b_acc" type="color" value="${esc(cfg.branding.accent)}" style="width:60px;padding:2px"><input id="b_acc_t" class="mono" value="${esc(cfg.branding.accent)}" style="width:110px"></div></label>
+      <label class="f">Logo URL (https, or a data:image URL)<input id="b_logo" value="${esc(cfg.branding.logo_url)}" placeholder="https://…/logo.svg"></label></div>`;
+    if (t === "roles") {
+      const acts = Object.entries(meta.actions);
+      body = `<div class="card"><h2>Roles</h2><p class="muted" style="margin-top:0">Name roles the way your team does. Keys are permanent IDs.</p>
+        <table><thead><tr><th>Name</th><th>Key</th><th></th></tr></thead><tbody>
+        ${cfg.roles.map((r, i) => `<tr><td><input data-rn="${i}" value="${esc(r.name)}" style="width:260px"></td><td class="mono muted">${esc(r.key)}</td>
+          <td><button class="btn small" data-rdel="${i}" ${cfg.roles.length < 2 ? "disabled" : ""}>Remove</button></td></tr>`).join("")}
+        </tbody></table>
+        <div class="row" style="margin-top:10px"><input id="nr_name" placeholder="New role name, e.g. Solutions Architect" style="width:300px"><button class="btn small" id="nr_go">Add role</button></div></div>
+      <div class="card" style="margin-top:14px"><h2>Access</h2>
+        <p class="muted" style="margin-top:0"><b>All</b> = every deployment in the workspace. <b>Own</b> = only deployments they're staffed on.</p>
+        <div class="matrix"><table><thead><tr><th>Action</th>${cfg.roles.map(r => `<th>${esc(r.name)}</th>`).join("")}</tr></thead><tbody>
+        ${acts.map(([a, desc]) => `<tr><td>${esc(desc)}<div class="faint mono" style="font-size:11px">${a}</div></td>
+          ${cfg.roles.map(r => {
+            const v = (cfg.permissions[a] || {})[r.key] || "";
+            const ws = meta.workspace_actions.includes(a);
+            return `<td><select data-perm="${a}" data-role="${esc(r.key)}" aria-label="${esc(r.name + ": " + desc)}">
+              <option value="" ${!v ? "selected" : ""}>—</option>${ws ? "" : `<option value="own" ${v === "own" ? "selected" : ""}>own</option>`}
+              <option value="all" ${v === "all" ? "selected" : ""}>all</option></select></td>`;
+          }).join("")}</tr>`).join("")}
+        </tbody></table></div></div>`;
+    }
+    if (t === "views") body = `<div class="card"><p class="muted" style="margin-top:0">Choose what each role sees when they sign in, in order.</p>
+      <div class="matrix"><table><thead><tr><th>Section</th>${cfg.roles.map(r => `<th>${esc(r.name)}</th>`).join("")}</tr></thead><tbody>
+      ${Object.entries(meta.widgets).map(([w, label]) => `<tr><td>${esc(label)}</td>${cfg.roles.map(r => `<td><input type="checkbox" data-w="${w}" data-role="${esc(r.key)}" ${(cfg.views[r.key] || []).includes(w) ? "checked" : ""} aria-label="${esc(r.name + ": " + label)}"></td>`).join("")}</tr>`).join("")}
+      </tbody></table></div></div>`;
+    if (t === "stages") {
+      const engOpts = Object.values(engines).map(e => [e.key, e.name + (e.builtin ? (e.status === "planned" ? " (planned)" : "") : " (yours)")]);
+      body = `<div class="card"><p class="muted" style="margin-top:0">Your methodology: the stages every deployment moves through, their exit criteria, and the engine on each.</p>
         <table><thead><tr><th></th><th>Stage</th><th>Key</th><th>Engine</th><th>Exit criteria</th><th></th></tr></thead><tbody>
-        ${cfg.stages.map((s, i) => `<tr>
-          <td class="faint mono">${i + 1}</td>
+        ${cfg.stages.map((s, i) => `<tr><td class="faint mono">${i + 1}</td>
           <td><input data-s="${i}" data-k="name" value="${esc(s.name)}" style="width:130px"></td>
           <td><input data-s="${i}" data-k="key" value="${esc(s.key)}" style="width:100px" class="mono"></td>
-          <td><select data-s="${i}" data-k="engine">${engOpts.map(([k, e]) => `<option value="${k}" ${k === s.engine ? "selected" : ""}>${esc(e.name)}${e.status === "planned" ? " (planned)" : ""}</option>`).join("")}</select></td>
-          <td><input data-s="${i}" data-k="exit_criteria" value="${esc(s.exit_criteria)}" style="width:100%;min-width:260px"></td>
+          <td><select data-s="${i}" data-k="engine">${engOpts.map(([k, n]) => `<option value="${esc(k)}" ${k === s.engine ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></td>
+          <td><input data-s="${i}" data-k="exit_criteria" value="${esc(s.exit_criteria)}" style="width:100%;min-width:240px"></td>
           <td style="white-space:nowrap"><button class="btn small" data-up="${i}" ${i ? "" : "disabled"} aria-label="Move up">↑</button>
             <button class="btn small" data-del="${i}" aria-label="Remove stage">✕</button></td></tr>`).join("")}
         </tbody></table>
-        <button class="btn small" id="addstage" style="margin-top:10px">Add stage</button>
-      </div>
-      <div class="card"><h2>Role names</h2><div class="row">
-        ${meta.roles.map(r => `<label class="f">${r}<input data-label="${r}" value="${esc(cfg.labels[r])}"></label>`).join("")}</div></div>
-      <div class="card"><h2>Permissions</h2>
-        <table class="perm"><thead><tr><th>Action</th>${meta.roles.map(r => `<th>${esc(cfg.labels[r])}</th>`).join("")}</tr></thead><tbody>
-        ${Object.entries(meta.actions).map(([a, desc]) => `<tr><td>${esc(desc)}<div class="faint mono" style="font-size:11px">${a}</div></td>
-          ${meta.roles.map(r => `<td><input type="checkbox" data-perm="${a}" data-role="${r}" ${cfg.permissions[a].includes(r) ? "checked" : ""} ${meta.locked[a] ? "disabled" : ""} aria-label="${esc(r + " " + a)}"></td>`).join("")}</tr>`).join("")}
-        </tbody></table></div>
-      <div class="card"><h2>Custom fields</h2><p class="muted" style="margin-top:0">JSON. Types: text, number, date, select (with options), bool.</p>
-        <textarea id="fields" rows="12" style="width:100%">${esc(JSON.stringify(cfg.fields, null, 2))}</textarea></div>
-      <div class="row"><button class="btn primary" id="savecfg">Save settings</button><button class="btn" id="resetcfg">Discard changes</button></div>
-    </div>`;
-    document.querySelectorAll("[data-s]").forEach(el => el.oninput = () => { cfg.stages[+el.dataset.s][el.dataset.k] = el.value; });
-    document.querySelectorAll("[data-label]").forEach(el => el.oninput = () => { cfg.labels[el.dataset.label] = el.value; });
-    document.querySelectorAll("[data-perm]").forEach(el => el.onchange = () => {
-      const set = new Set(cfg.permissions[el.dataset.perm]); el.checked ? set.add(el.dataset.role) : set.delete(el.dataset.role);
-      cfg.permissions[el.dataset.perm] = [...set];
+        <div class="row" style="margin-top:10px"><button class="btn small" id="addstage">Add stage</button><button class="btn small" id="resetstages">Reset to default template</button></div></div>`;
+    }
+    if (t === "engines") {
+      const custom = Object.values(engines).filter(e => !e.builtin);
+      body = `<div class="card"><h2>Your engines</h2>
+        <p class="muted" style="margin-top:0">Plug in your own scripts and integrations. Results become findings, with the same confirmation and audit trail as the built-in engines.</p>
+        ${custom.length ? `<table><thead><tr><th>Engine</th><th>Kind</th><th>Where</th><th></th></tr></thead><tbody>
+          ${custom.map(e => `<tr><td><b>${esc(e.name)}</b><div class="faint" style="font-size:12px">${esc(e.does)}</div></td>
+            <td>${e.kind === "webhook" ? "Webhook · we call it" : "Push · it calls us"}</td>
+            <td class="mono" style="font-size:12px;word-break:break-all">${esc(e.url || "posts to /api/ingest/findings")}</td>
+            <td style="white-space:nowrap"><button class="btn small" data-rot="${esc(e.key)}">Rotate credential</button>
+              ${can("config.edit") ? `<button class="btn small" data-edel="${esc(e.key)}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table>` : `<div class="empty">No engines of your own yet.</div>`}
+        <div id="eng_secret"></div></div>
+        <div class="card grid" style="margin-top:14px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+          <h2 style="grid-column:1/-1;margin:0">Register an engine</h2>
+          <label class="f">Name<input id="ne_name" placeholder="Integration health check"></label>
+          <label class="f">Key<input id="ne_key" class="mono" placeholder="integration_health"></label>
+          <label class="f">Kind<select id="ne_kind"><option value="webhook">Webhook: we call your service</option><option value="push">Push: your script posts results</option></select></label>
+          <label class="f" id="ne_url_l">URL (https)<input id="ne_url" placeholder="https://engines.yourco.com/health"></label>
+          <label class="f" style="grid-column:1/-1">What it does<input id="ne_does"></label>
+          <label class="f" style="grid-column:1/-1">Input hint (shown to whoever runs it)<input id="ne_hint"></label>
+          <div><button class="btn primary" id="ne_go">Register engine</button></div>
+        </div>
+        <div class="card" style="margin-top:14px"><h2>Built-in engines</h2><table><tbody>
+          ${Object.values(engines).filter(e => e.builtin && e.key !== "none").map(e => `<tr><td><b>${esc(e.name)}</b><div class="faint" style="font-size:12px">${esc(e.does)}</div></td><td>${e.status === "live" ? pill("done", "live") : `<span class="pill plain faint">planned</span>`}</td></tr>`).join("")}
+        </tbody></table></div>`;
+    }
+    if (t === "fields") body = `<div class="card"><p class="muted" style="margin-top:0">JSON. Types: text, number, date, select (with options), bool.</p>
+      <textarea id="fields" rows="14" style="width:100%">${esc(JSON.stringify(cfg.fields, null, 2))}</textarea></div>`;
+
+    const needsSave = t !== "engines";
+    $("#main").innerHTML = `<h1>Workspace settings</h1><p class="sub">Start from the default template and make it yours. Every change is validated and audited.</p>
+      <div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${k === t}" class="${k === t ? "on" : ""}" data-tab="${k}">${esc(l)}</button>`).join("")}</div>
+      ${body}
+      ${needsSave ? `<div class="row" style="margin-top:14px"><button class="btn primary" id="savecfg">Save settings</button><button class="btn" id="resetcfg">Discard changes</button></div>` : ""}`;
+    bind();
+  };
+
+  const bind = () => {
+    document.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => { S.settingsTab = b.dataset.tab; draw(); });
+    const sc = $("#savecfg"); if (sc) sc.onclick = () => {
+      if (S.settingsTab === "fields") { try { cfg.fields = JSON.parse($("#fields").value); } catch (e) { toast("Custom fields isn't valid JSON", true); return; } }
+      save();
+    };
+    const rc = $("#resetcfg"); if (rc) rc.onclick = () => act(settings)();
+    // branding
+    const bn = $("#b_name"); if (bn) {
+      bn.oninput = () => cfg.branding.product_name = bn.value;
+      $("#b_acc").oninput = e => { cfg.branding.accent = e.target.value; $("#b_acc_t").value = e.target.value; };
+      $("#b_acc_t").oninput = e => { cfg.branding.accent = e.target.value; };
+      $("#b_logo").oninput = e => cfg.branding.logo_url = e.target.value;
+    }
+    // roles
+    document.querySelectorAll("[data-rn]").forEach(el => el.oninput = () => { cfg.roles[+el.dataset.rn].name = el.value; });
+    document.querySelectorAll("[data-rdel]").forEach(b => b.onclick = () => {
+      const k = cfg.roles[+b.dataset.rdel].key;
+      cfg.roles.splice(+b.dataset.rdel, 1);
+      Object.values(cfg.permissions).forEach(p => delete p[k]); delete cfg.views[k]; draw();
     });
+    const nr = $("#nr_go"); if (nr) nr.onclick = () => {
+      const name = $("#nr_name").value.trim(); if (!name) return;
+      let key = name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 32) || "role";
+      if (!/^[a-z]/.test(key)) key = "r_" + key;
+      while (cfg.roles.some(r => r.key === key)) key += "_2";
+      cfg.roles.push({ key, name }); cfg.views[key] = ["my_tasks", "chain"]; draw();
+    };
+    document.querySelectorAll("[data-perm]").forEach(el => el.onchange = () => {
+      const p = cfg.permissions[el.dataset.perm] = cfg.permissions[el.dataset.perm] || {};
+      if (el.value) p[el.dataset.role] = el.value; else delete p[el.dataset.role];
+    });
+    // views
+    document.querySelectorAll("[data-w]").forEach(el => el.onchange = () => {
+      const v = new Set(cfg.views[el.dataset.role] || []);
+      el.checked ? v.add(el.dataset.w) : v.delete(el.dataset.w);
+      cfg.views[el.dataset.role] = Object.keys(meta.widgets).filter(w => v.has(w));
+    });
+    // stages
+    document.querySelectorAll("[data-s]").forEach(el => el.oninput = el.onchange = () => { cfg.stages[+el.dataset.s][el.dataset.k] = el.value; });
     document.querySelectorAll("[data-up]").forEach(b => b.onclick = () => { const i = +b.dataset.up; [cfg.stages[i - 1], cfg.stages[i]] = [cfg.stages[i], cfg.stages[i - 1]]; draw(); });
     document.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { cfg.stages.splice(+b.dataset.del, 1); draw(); });
-    $("#addstage").onclick = () => { cfg.stages.push({ key: "stage_" + (cfg.stages.length + 1), name: "New stage", engine: "none", exit_criteria: "" }); draw(); };
-    $("#resetcfg").onclick = () => act(settings)();
-    $("#savecfg").onclick = act(async () => {
-      try { cfg.fields = JSON.parse($("#fields").value); } catch (e) { throw new Error("Custom fields isn't valid JSON"); }
-      const r = await api("/api/config", { method: "PUT", body: cfg });
-      S.cfg = r.config; S.me = await api("/api/me"); toast("Settings saved"); render();
-    });
+    const as = $("#addstage"); if (as) as.onclick = () => { cfg.stages.push({ key: "stage_" + (cfg.stages.length + 1), name: "New stage", engine: "none", exit_criteria: "" }); draw(); };
+    const rs = $("#resetstages"); if (rs) rs.onclick = () => { cfg.stages = JSON.parse(JSON.stringify(meta.defaults.stages)); draw(); };
+    // engines
+    const kind = $("#ne_kind"); if (kind) {
+      kind.onchange = () => { $("#ne_url_l").style.display = kind.value === "webhook" ? "" : "none"; };
+      $("#ne_name").oninput = () => { if (!$("#ne_key").dataset.touched) $("#ne_key").value = $("#ne_name").value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 32); };
+      $("#ne_key").oninput = () => $("#ne_key").dataset.touched = "1";
+      $("#ne_go").onclick = act(async () => {
+        const body = { name: $("#ne_name").value, key: $("#ne_key").value, kind: kind.value, does: $("#ne_does").value, input_hint: $("#ne_hint").value };
+        if (kind.value === "webhook") body.url = $("#ne_url").value;
+        const r = await api("/api/engines", { method: "POST", body });
+        await loadConfig(); await settings();
+        showSecret(r);
+      });
+    }
+    document.querySelectorAll("[data-rot]").forEach(b => b.onclick = act(async () => showSecret(await api(`/api/engines/${b.dataset.rot}/rotate`, { method: "POST" }))));
+    document.querySelectorAll("[data-edel]").forEach(b => b.onclick = act(async () => {
+      const k = b.dataset.edel;
+      if (cfg.stages.some(s => s.engine === k)) { toast("Detach this engine from its stage first (Deployment chain tab)", true); return; }
+      cfg.engines = cfg.engines.filter(e => e.key !== k); await save();
+    }));
   };
+
+  function showSecret(r) {
+    const el = $("#eng_secret"); if (!el) return;
+    const [label, val] = r.signing_secret ? ["Signing secret", r.signing_secret] : ["Engine token", r.engine_token];
+    el.innerHTML = `<div class="secret"><b>${label}</b> <span class="muted">· ${esc(r.note)}</span><code class="mono">${esc(val)}</code></div>`;
+  }
+
   draw();
 }
 
+applyBrand();
 S.token ? act(signIn)(S.token) : renderSignIn();
 </script>
 </body>

@@ -1,49 +1,106 @@
-"""Per-tenant configuration: what makes Fieldwork customizable SaaS.
+"""Per-tenant configuration: what makes Fieldwork a platform, not a methodology.
 
-Each customer (an FDE org) owns its workspace config:
+Deployments work similarly enough across companies that a strong default
+template works out of the box, and differently enough that every team needs to
+make it its own. So each workspace owns:
 
-- stages       the deployment chain, in order, with the engine that powers each
+- branding     white-label product name, accent color, logo
+- roles        its own roles (Engagement Manager, FDE, ...), named its own way
+- permissions  action -> {role: scope}. scope "all" = every deployment in the
+               workspace; "own" = only deployments the person is staffed on
+- views        what each role sees on its home screen
+- stages       the deployment chain, in order, each with an engine
+- engines      its own scripts and services, plugged in next to the built-ins
 - fields       custom fields on customers and deployments
-- permissions  which roles may take which actions
-- labels       what the org calls its roles ("Deployment Strategist", ...)
 
-Directors edit it through PUT /api/config. validate() is strict so a bad edit
-fails loudly instead of corrupting the workspace, and a few invariants are
-locked so a director cannot lock the org out of its own settings.
+validate() is strict so a bad edit fails loudly instead of corrupting the
+workspace, and a workspace can never lock itself out of its own settings.
 """
 
 from __future__ import annotations
 
 import copy
 import re
+from urllib.parse import urlparse
 
-ROLES = ("fde", "manager", "director")
-ENGINES = ("none", "census", "cortex", "conformance", "golive", "sendero", "attribution", "threshold")
+SCOPES = ("own", "all")
 FIELD_TYPES = ("text", "number", "date", "select", "bool")
-
-# action -> roles allowed. FDE-scoped actions are further limited to
-# deployments the FDE is a member of (enforced in the API layer).
-ACTIONS = {
-    "deployment.read_all": "See every deployment in the workspace, not only assigned ones",
-    "deployment.create":   "Open a new customer deployment",
-    "deployment.advance":  "Move a deployment to another stage",
-    "deployment.staff":    "Add or remove people on a deployment",
-    "task.create":         "Create tasks",
-    "task.assign":         "Assign tasks to other people",
-    "engine.run":          "Run an engine (Adopt, Bench, ...) on a deployment",
-    "finding.confirm":     "Confirm an engine finding into the record",
-    "people.read":         "See the team roster and workload",
-    "bench.match":         "Match bench people to a deployment's staffing needs",
-    "audit.read":          "Read the audit trail",
-    "audit.verify":        "Verify the audit hash chain",
-    "config.edit":         "Edit workspace configuration",
+BUILTIN_ENGINES = ("none", "sendero", "threshold",
+                   "census", "cortex", "conformance", "golive", "attribution")
+WIDGETS = {
+    "kpis": "Headline numbers",
+    "chain": "Deployments by stage",
+    "my_tasks": "My open tasks",
+    "team": "Team load",
+    "findings": "Findings awaiting confirmation",
 }
 
-LOCKED = {"config.edit": ["director"]}
+# Actions whose "own" scope has no meaning (they aren't about one deployment).
+WORKSPACE_ACTIONS = {"deployment.create", "people.read", "people.manage", "audit.read",
+                     "audit.verify", "engine.manage", "config.edit"}
+
+ACTIONS = {
+    "deployment.view":    "See deployments",
+    "deployment.create":  "Open a new customer deployment",
+    "deployment.advance": "Move a deployment to its next stage",
+    "deployment.jump":    "Skip stages or move a deployment backward",
+    "deployment.edit":    "Edit a deployment's health and details",
+    "deployment.staff":   "Add or remove people on a deployment",
+    "task.create":        "Create tasks for themselves",
+    "task.assign":        "Assign tasks to other people",
+    "task.update_any":    "Update other people's tasks",
+    "engine.run":         "Run engines on a deployment",
+    "finding.confirm":    "Confirm engine findings into the record",
+    "bench.match":        "Match people to a deployment's staffing needs",
+    "people.read":        "See the team roster and workload",
+    "people.manage":      "Add people and change their roles",
+    "audit.read":         "Read the audit trail",
+    "audit.verify":       "Verify the audit hash chain",
+    "engine.manage":      "Register and manage engines (scripts and integrations)",
+    "config.edit":        "Edit workspace settings",
+}
+
+DOERS = ("implementation_consultant", "fde", "ai_engineer")
 
 DEFAULT_CONFIG: dict = {
-    "labels": {"fde": "Forward Deployed Engineer", "manager": "FDE Manager",
-               "director": "Director of Deployments"},
+    "branding": {"product_name": "Fieldwork", "accent": "#e8b25c", "logo_url": ""},
+    "roles": [
+        {"key": "head", "name": "Head of Deployments"},
+        {"key": "engagement_manager", "name": "Engagement Manager"},
+        {"key": "implementation_consultant", "name": "Implementation Consultant"},
+        {"key": "fde", "name": "Forward Deployed Engineer"},
+        {"key": "ai_engineer", "name": "AI Engineer"},
+        {"key": "customer", "name": "Customer Stakeholder"},
+    ],
+    "permissions": {
+        "deployment.view":    {"head": "all", "engagement_manager": "own", "customer": "own",
+                               **{r: "own" for r in DOERS}},
+        "deployment.create":  {"head": "all", "engagement_manager": "all"},
+        "deployment.advance": {"head": "all", "engagement_manager": "own", **{r: "own" for r in DOERS}},
+        "deployment.jump":    {"head": "all", "engagement_manager": "own"},
+        "deployment.edit":    {"head": "all", "engagement_manager": "own", **{r: "own" for r in DOERS}},
+        "deployment.staff":   {"head": "all", "engagement_manager": "own"},
+        "task.create":        {"head": "all", "engagement_manager": "own", **{r: "own" for r in DOERS}},
+        "task.assign":        {"head": "all", "engagement_manager": "own"},
+        "task.update_any":    {"head": "all", "engagement_manager": "own"},
+        "engine.run":         {"head": "all", "engagement_manager": "own", **{r: "own" for r in DOERS}},
+        "finding.confirm":    {"head": "all", "engagement_manager": "own"},
+        "bench.match":        {"head": "all", "engagement_manager": "own"},
+        "people.read":        {"head": "all", "engagement_manager": "all"},
+        "people.manage":      {"head": "all"},
+        "audit.read":         {"head": "all"},
+        "audit.verify":       {"head": "all"},
+        "engine.manage":      {"head": "all"},
+        "config.edit":        {"head": "all"},
+    },
+    "views": {
+        "head":                      ["kpis", "chain", "team", "findings"],
+        "engagement_manager":        ["kpis", "chain", "findings", "my_tasks", "team"],
+        "implementation_consultant": ["my_tasks", "chain"],
+        "fde":                       ["my_tasks", "chain"],
+        "ai_engineer":               ["my_tasks", "chain"],
+        "customer":                  ["chain"],
+    },
     "stages": [
         {"key": "discover",  "name": "Discover",  "engine": "census",
          "exit_criteria": "Systems inventory and evidence gaps written up and read out"},
@@ -58,6 +115,7 @@ DEFAULT_CONFIG: dict = {
         {"key": "value",     "name": "Value",     "engine": "attribution",
          "exit_criteria": "Outcome measured and confirmed with the customer"},
     ],
+    "engines": [],   # customer-registered engines; see engines.py for shapes
     "fields": {
         "customer": [
             {"key": "arr", "label": "Contract value (ARR)", "type": "number"},
@@ -68,24 +126,10 @@ DEFAULT_CONFIG: dict = {
             {"key": "tier", "label": "Tier", "type": "select", "options": ["Pilot", "Standard", "Strategic"]},
         ],
     },
-    "permissions": {
-        "deployment.read_all": ["manager", "director"],
-        "deployment.create":   ["manager", "director"],
-        "deployment.advance":  ["fde", "manager", "director"],
-        "deployment.staff":    ["manager", "director"],
-        "task.create":         ["fde", "manager", "director"],
-        "task.assign":         ["manager", "director"],
-        "engine.run":          ["fde", "manager", "director"],
-        "finding.confirm":     ["manager", "director"],
-        "people.read":         ["manager", "director"],
-        "bench.match":         ["manager", "director"],
-        "audit.read":          ["manager", "director"],
-        "audit.verify":        ["director"],
-        "config.edit":         ["director"],
-    },
 }
 
 _KEY = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 class ConfigError(ValueError):
@@ -96,72 +140,161 @@ def default() -> dict:
     return copy.deepcopy(DEFAULT_CONFIG)
 
 
-def validate(cfg: dict) -> dict:
-    """Return a normalized copy or raise ConfigError with a specific message."""
+def _key(val, where: str) -> str:
+    if not isinstance(val, str) or not _KEY.match(val):
+        raise ConfigError(f"{where}: bad key {val!r} (start with a letter; lowercase, digits, underscore)")
+    return val
+
+
+def _url_ok(u: str, allow_http: bool = False) -> bool:
+    p = urlparse(u)
+    return p.scheme in (("https", "http") if allow_http else ("https",)) and bool(p.netloc)
+
+
+def validate(cfg: dict, allow_http_engines: bool = False, known_urls: frozenset = frozenset()) -> dict:
+    """Return a normalized copy or raise ConfigError with a specific message.
+
+    known_urls: engine URLs already registered (e.g. by an operator on a
+    self-hosted install) that stay valid when other settings are edited.
+    """
     if not isinstance(cfg, dict):
         raise ConfigError("config must be an object")
-    out = default()
+    base = default()
+    out: dict = {}
 
-    labels = cfg.get("labels", out["labels"])
-    if set(labels) - set(ROLES):
-        raise ConfigError(f"labels: unknown role(s) {sorted(set(labels) - set(ROLES))}")
-    out["labels"].update({k: str(v)[:60] for k, v in labels.items()})
+    # branding
+    b = {**base["branding"], **(cfg.get("branding") or {})}
+    name = str(b.get("product_name") or "").strip()[:40]
+    if not name:
+        raise ConfigError("branding.product_name can't be empty")
+    if not _HEX.match(str(b.get("accent", ""))):
+        raise ConfigError("branding.accent must be a hex color like #e8b25c")
+    logo = str(b.get("logo_url") or "").strip()
+    if logo and not (_url_ok(logo) or re.match(r"^data:image/(png|svg\+xml|jpeg|webp);base64,", logo)):
+        raise ConfigError("branding.logo_url must be an https URL or a data:image URL")
+    if len(logo) > 200_000:
+        raise ConfigError("branding.logo_url is too large (keep logos under ~150 KB)")
+    out["branding"] = {"product_name": name, "accent": b["accent"].lower(), "logo_url": logo}
 
-    stages = cfg.get("stages", out["stages"])
-    if not isinstance(stages, list) or not 2 <= len(stages) <= 12:
-        raise ConfigError("stages: need between 2 and 12 stages")
-    seen = set()
-    norm_stages = []
-    for s in stages:
-        key = s.get("key", "")
-        if not _KEY.match(key):
-            raise ConfigError(f"stages: bad key {key!r} (lowercase, digits, underscore)")
-        if key in seen:
-            raise ConfigError(f"stages: duplicate key {key!r}")
-        seen.add(key)
-        engine = s.get("engine", "none")
-        if engine not in ENGINES:
-            raise ConfigError(f"stages: unknown engine {engine!r} on {key!r}")
-        norm_stages.append({"key": key, "name": str(s.get("name") or key)[:40],
-                            "engine": engine,
-                            "exit_criteria": str(s.get("exit_criteria", ""))[:280]})
-    out["stages"] = norm_stages
+    # roles
+    roles = cfg.get("roles", base["roles"])
+    if not isinstance(roles, list) or not 1 <= len(roles) <= 20:
+        raise ConfigError("roles: need between 1 and 20 roles")
+    seen: set = set()
+    out["roles"] = []
+    for r in roles:
+        k = _key(r.get("key"), "roles")
+        if k in seen:
+            raise ConfigError(f"roles: duplicate key {k!r}")
+        seen.add(k)
+        out["roles"].append({"key": k, "name": str(r.get("name") or k).strip()[:60]})
+    role_keys = seen
 
-    fields = cfg.get("fields", out["fields"])
-    for scope in ("customer", "deployment"):
-        norm = []
-        keys = set()
-        for f in fields.get(scope, []):
-            if not _KEY.match(f.get("key", "")) or f["key"] in keys:
-                raise ConfigError(f"fields.{scope}: bad or duplicate key {f.get('key')!r}")
-            if f.get("type") not in FIELD_TYPES:
-                raise ConfigError(f"fields.{scope}.{f['key']}: type must be one of {FIELD_TYPES}")
-            keys.add(f["key"])
-            item = {"key": f["key"], "label": str(f.get("label") or f["key"])[:60], "type": f["type"]}
-            if f["type"] == "select":
-                opts = f.get("options") or []
-                if not opts:
-                    raise ConfigError(f"fields.{scope}.{f['key']}: select needs options")
-                item["options"] = [str(o)[:40] for o in opts]
-            norm.append(item)
-        out["fields"][scope] = norm
-
-    perms = cfg.get("permissions", out["permissions"])
+    # permissions
+    perms = cfg.get("permissions", base["permissions"])
     unknown = set(perms) - set(ACTIONS)
     if unknown:
         raise ConfigError(f"permissions: unknown action(s) {sorted(unknown)}")
-    for action, roles in perms.items():
-        if not isinstance(roles, list) or set(roles) - set(ROLES):
-            raise ConfigError(f"permissions.{action}: roles must be a subset of {ROLES}")
-        out["permissions"][action] = sorted(set(roles), key=ROLES.index)
-    for action, roles in LOCKED.items():
-        if out["permissions"][action] != roles:
-            raise ConfigError(f"permissions.{action} is locked to {roles} so the workspace can't be locked out")
+    out["permissions"] = {}
+    for action in ACTIONS:
+        grants = perms.get(action, {})
+        if not isinstance(grants, dict):
+            raise ConfigError(f"permissions.{action}: expected {{role: scope}}")
+        clean = {}
+        for role, scope in grants.items():
+            if role not in role_keys:
+                raise ConfigError(f"permissions.{action}: unknown role {role!r}")
+            if scope not in SCOPES:
+                raise ConfigError(f"permissions.{action}.{role}: scope must be 'own' or 'all'")
+            if action in WORKSPACE_ACTIONS and scope != "all":
+                raise ConfigError(f"permissions.{action}: workspace-wide action, scope must be 'all'")
+            clean[role] = scope
+        out["permissions"][action] = clean
+    if not out["permissions"]["config.edit"]:
+        raise ConfigError("permissions.config.edit: at least one role must be able to edit settings")
+
+    # views
+    views = cfg.get("views", {})
+    out["views"] = {}
+    for rk in role_keys:
+        ws = views.get(rk, base["views"].get(rk, ["my_tasks", "chain"]))
+        bad = [w for w in ws if w not in WIDGETS]
+        if bad:
+            raise ConfigError(f"views.{rk}: unknown widget(s) {bad}")
+        out["views"][rk] = list(dict.fromkeys(ws))
+    stray = set(views) - role_keys
+    if stray:
+        raise ConfigError(f"views: unknown role(s) {sorted(stray)}")
+
+    # custom engines (declared before stages so stages can reference them)
+    engines = cfg.get("engines", [])
+    out["engines"] = []
+    eseen: set = set()
+    for e in engines:
+        k = _key(e.get("key"), "engines")
+        if k in BUILTIN_ENGINES or k in eseen:
+            raise ConfigError(f"engines: key {k!r} is taken")
+        eseen.add(k)
+        kind = e.get("kind")
+        if kind not in ("webhook", "push"):
+            raise ConfigError(f"engines.{k}: kind must be 'webhook' (we call it) or 'push' (it calls us)")
+        item = {"key": k, "kind": kind, "name": str(e.get("name") or k).strip()[:60],
+                "does": str(e.get("does") or "").strip()[:280],
+                "input_hint": str(e.get("input_hint") or "").strip()[:200]}
+        if kind == "webhook":
+            url = str(e.get("url") or "").strip()
+            if url not in known_urls and not _url_ok(url, allow_http_engines):
+                raise ConfigError(f"engines.{k}: webhook url must be https")
+            item["url"] = url
+        out["engines"].append(item)
+    engine_keys = set(BUILTIN_ENGINES) | eseen
+
+    # stages
+    stages = cfg.get("stages", base["stages"])
+    if not isinstance(stages, list) or not 2 <= len(stages) <= 12:
+        raise ConfigError("stages: need between 2 and 12 stages")
+    sseen: set = set()
+    out["stages"] = []
+    for s in stages:
+        k = _key(s.get("key"), "stages")
+        if k in sseen:
+            raise ConfigError(f"stages: duplicate key {k!r}")
+        sseen.add(k)
+        eng = s.get("engine", "none")
+        if eng not in engine_keys:
+            raise ConfigError(f"stages.{k}: unknown engine {eng!r}")
+        out["stages"].append({"key": k, "name": str(s.get("name") or k)[:40], "engine": eng,
+                              "exit_criteria": str(s.get("exit_criteria", ""))[:280]})
+
+    # fields
+    fields = cfg.get("fields", base["fields"])
+    out["fields"] = {}
+    for scope in ("customer", "deployment"):
+        norm, keys = [], set()
+        for f in fields.get(scope, []):
+            fk = _key(f.get("key"), f"fields.{scope}")
+            if fk in keys:
+                raise ConfigError(f"fields.{scope}: duplicate key {fk!r}")
+            if f.get("type") not in FIELD_TYPES:
+                raise ConfigError(f"fields.{scope}.{fk}: type must be one of {FIELD_TYPES}")
+            keys.add(fk)
+            item = {"key": fk, "label": str(f.get("label") or fk)[:60], "type": f["type"]}
+            if f["type"] == "select":
+                opts = f.get("options") or []
+                if not opts:
+                    raise ConfigError(f"fields.{scope}.{fk}: select needs options")
+                item["options"] = [str(o)[:40] for o in opts]
+            norm.append(item)
+        out["fields"][scope] = norm
     return out
 
 
 def stage_keys(cfg: dict) -> list[str]:
     return [s["key"] for s in cfg["stages"]]
+
+
+def role_name(cfg: dict, key: str) -> str:
+    return next((r["name"] for r in cfg["roles"] if r["key"] == key), key)
 
 
 def check_fields(cfg: dict, scope: str, values: dict) -> dict:

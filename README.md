@@ -1,92 +1,110 @@
 # Fieldwork
 
-The operating platform for forward-deployed engineering teams.
+The platform deployment teams build their methodology on.
 
-Every AI company that sells into the enterprise now runs an FDE team, and every
-one of those teams runs its deployments out of spreadsheets, Slack and a
-project tracker built for something else. Fieldwork is the system of record
-for that work. Each customer deployment is a chain of stages. Engines at each
-stage do the diagnostic work, and every change is audited.
+Every software company that sells complex products has a deployment team:
+engagement managers, implementation consultants, forward-deployed engineers,
+AI engineers. Almost all of them run on tools they built themselves, because
+nothing on the market fits how they work.
 
-It's customizable SaaS. Each FDE org gets its own workspace and defines its own
-stages, role names, permissions and custom fields.
+Fieldwork starts from one observation: **deployments work similarly enough
+across companies to ship a strong default, and differently enough that every
+team needs to make it its own.** So it ships a default template that works on
+day one, and lets each team change all of it:
+
+- **White-label it.** Their product name, accent color and logo.
+- **Their roles and access.** Define roles and grant each action at *all* scope (every deployment) or *own* scope (only deployments they're staffed on).
+- **Their views.** Choose what each role sees on its home screen.
+- **Their methodology.** Stages, exit criteria and custom fields.
+- **Their own scripts and integrations.** Plug them in as engines next to the built-ins.
+
+Fieldwork doesn't sell a methodology. It's the system of record teams build theirs on.
 
 ## Run it
 
 ```
 pip install -r requirements.txt
 python -m fieldwork seed
-FIELDWORK_DEMO=1 python -m fieldwork serve
+FIELDWORK_DEMO=1 FIELDWORK_ALLOW_PRIVATE_ENGINES=1 python -m fieldwork serve
 ```
 
-Open http://127.0.0.1:8000 and sign in as any of the demo people. The demo
-workspace is **Meridian AI**, a fictional FDE org running four customer
-deployments. Or use Docker: `docker compose up`.
+To let the demo's own webhook engine answer, run this in a second terminal:
 
 ```
-python -m pytest -q          # 18 tests
+FIELDWORK_ENGINE_SECRET=fws_demo_readiness_signing_secret python examples/engines/readiness_engine.py
 ```
 
-## Roles
+Open http://127.0.0.1:8000 and sign in as anyone on the demo team. **Meridian
+AI** has white-labeled its workspace as "Meridian Deploy", plugged its own
+go-live readiness script into the Go-live stage, and runs a latency probe
+inside a customer's environment that pushes results in.
 
-| | FDE | FDE Manager | Director of Deployments |
-|---|---|---|---|
-| Sees | the deployments they're on | every deployment | every deployment |
-| Moves stages | one step forward | any direction (back needs a note) | any direction |
-| Tasks | creates their own, updates their own | creates and assigns to anyone | same |
-| Engines | runs on their deployments | runs any, matches bench | same |
-| Findings | — | confirms others' findings | same |
-| Admin | — | reads audit trail | verifies the audit chain, edits workspace settings |
+```
+python -m pytest -q          # 29 tests
+```
 
-These are defaults. A director can change any of them in Workspace settings,
-except that editing settings stays with directors so nobody gets locked out.
+## The default template
+
+| Role | Sees | Can |
+|---|---|---|
+| Head of Deployments | all deployments | everything, including settings, engines and people |
+| Engagement Manager | their engagements | open deployments, move stages freely, staff, assign, confirm findings, match bench |
+| Implementation Consultant, FDE, AI Engineer | deployments they're on | advance one stage, own tasks, run engines |
+| Customer Stakeholder | their own deployment | read only |
+
+Stages: Discover → Integrate → Test → Go-live → Adopt → Value.
+
+Every row, stage and permission above is editable in Workspace settings.
 
 ## Engines
 
-Each engine is an existing standalone project, vendored unchanged and wrapped
-by an adapter (`fieldwork/engines/__init__.py`). Source commits are in
-[ENGINES.md](ENGINES.md).
+Engines do the diagnostic work at each stage. Their output becomes a
+**finding**, which someone other than the person who ran the engine has to
+confirm before it counts.
 
-| Stage | Engine | Status |
+**Built in**, each an existing standalone project vendored unchanged (see [ENGINES.md](ENGINES.md)):
+
+| Engine | Does | Status |
 |---|---|---|
-| Adopt | **Sendero**: two-level outlier test classifying a friction point as BUILD vs TRAINING | live |
-| any (staffing) | **Threshold**: gate-by-gate bench matching with citations; never infers what it can't see | live |
-| Integrate | Cortex: agent permissions and human approval gates | planned |
-| Discover | Interface Census + advisory engine | planned |
-| Test | Conformance harness | planned |
-| Go-live | Sendero Go-Live Command Center | planned |
-| Value | Coyote attribution | planned |
+| Sendero | Two-level outlier test: is a friction point a BUILD problem or a TRAINING problem? | live |
+| Threshold | Scores people against a deployment's staffing needs, gate by gate, with citations; never infers what it can't see | live |
+| Cortex, Interface Census, conformance harness, Go-Live Command Center, Coyote attribution | | planned |
 
-A planned engine shows as "not connected yet" in the console. Stage tracking
-and tasks work on every stage today.
+**Customer-built engines** ([docs/ENGINE_PLUGINS.md](docs/ENGINE_PLUGINS.md)):
 
-Engine output is saved as a **finding**. Someone other than the person who ran
-the engine has to confirm it before it goes into the record.
+- **Webhook engines.** Fieldwork calls the team's service when someone clicks Run, with a signed request (HMAC-SHA256). Example: `examples/engines/readiness_engine.py`.
+- **Push engines.** The team's script runs wherever it needs to (CI, cron, inside the customer's firewall) and posts results in with an engine token. Example: `examples/engines/push_probe.py`.
 
-## Guarantees (each one is a test in `tests/test_platform.py`)
+Both examples use only the Python standard library, so they drop into any environment.
 
-- **Tenant isolation.** No read, write, assignment or engine run crosses workspaces. Another tenant's objects return 404, not 403, so their existence isn't leaked.
-- **Least privilege by default.** FDEs see only their deployments, and role checks read the customer's own permission map.
-- **Tamper-evident audit.** Every write appends to a per-tenant SHA-256 hash chain in the same transaction (Arbiter's construction). Editing any row is detected by `/api/audit/verify`.
-- **Two-person confirmation** on engine findings.
-- **Config can't corrupt the workspace.** Settings are strictly validated. A stage can't be deleted while deployments sit in it, and directors can't be locked out.
+## Guarantees (each is a test)
+
+- **Tenant isolation.** No read, write, assignment, engine run or engine token crosses workspaces. Another tenant's objects return 404, not 403.
+- **Scoped access from the customer's own permission map.** Workspace-wide actions can't be granted at "own" scope.
+- **Tamper-evident audit.** Every write, including engine runs and engine pushes, appends to a per-tenant SHA-256 hash chain in the same transaction. Editing any row is detected.
+- **Two-person confirmation** on every finding.
+- **Settings can't break the workspace.** Strict validation. Roles that people hold and stages with live deployments can't be deleted, and nobody can remove their own access to settings.
+- **Engine safety.** Webhook calls are signed, refuse redirects, cap response size and time out. In SaaS mode they must use https and can't reach private or cloud-metadata addresses. Engine credentials are shown once, stored hashed where possible, and rotatable (rotation revokes the old one).
 
 ## Layout
 
 ```
-fieldwork/app.py        API: auth, tenancy, roles, deployments, tasks, engines, audit
-fieldwork/config.py     per-tenant config schema + validation (stages, fields, permissions)
+fieldwork/app.py        API: auth, tenancy, scoped permissions, deployments, tasks, engines, audit
+fieldwork/config.py     workspace config: branding, roles, permissions, views, stages, engines, fields
+fieldwork/plugins.py    customer-built engines: signed webhook calls, push ingestion
 fieldwork/audit.py      hash-chained audit log
 fieldwork/db.py         schema (SQLite; portable SQL for Postgres)
-fieldwork/engines/      adapters + vendored engine cores
+fieldwork/engines/      built-in engine adapters + vendored cores
 fieldwork/seed.py       demo workspace
 frontend/index.html     the console, one file, no build step
-tests/                  18 tests
+examples/engines/       a webhook engine and a push engine to copy from
+tests/                  29 tests
 ```
 
 ## Not built yet
 
-- Real identity. Today it's bearer tokens; SSO/OIDC comes next, and Arbiter's `identity_federation.py` is the starting point.
-- Postgres migrations (the schema is portable, but no migration tool is wired in).
-- The five planned engines.
-- Customer-facing executive view.
+- Real identity: SSO/OIDC for people, instead of bearer tokens.
+- Postgres migrations and encryption at rest for webhook signing secrets (KMS).
+- The five planned built-in engines.
+- Pinning the resolved IP for webhook calls, to close DNS-rebinding gaps in the SSRF guard.
+- A customer-safe task view (today a customer stakeholder sees every task on their deployment).

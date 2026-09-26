@@ -21,7 +21,7 @@ from .threshold_core.profile import Evidence, Profile
 from .threshold_core.score import Status, Verdict, score
 
 REGISTRY = {
-    "sendero":     {"name": "Sendero",      "status": "live",
+    "sendero":     {"name": "Sendero",      "status": "live", "builtin": True,
                     "does": "Classifies a friction point as BUILD vs TRAINING from per-user performance data"},
     "threshold":   {"name": "Threshold",    "status": "live",
                     "does": "Scores bench people against a deployment's staffing needs, gate by gate, with citations"},
