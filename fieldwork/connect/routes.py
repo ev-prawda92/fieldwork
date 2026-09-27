@@ -10,7 +10,7 @@ import secrets
 from datetime import timedelta
 from urllib.parse import urlencode
 
-from fastapi import Depends, HTTPException, Request, Response
+from fastapi import Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -130,6 +130,9 @@ def register(app, d) -> None:
             ident = p.identify(rt, tokens)
         except (ConnectError, http.HTTPError) as e:
             return back(personal, oauth_error=str(e)[:300])
+        except Exception as e:  # never a raw error page mid-install
+            core.log.warning("oauth callback for %s failed: %r", p.key, e)
+            return back(personal, oauth_error=f"{p.name} answered in a way we didn't expect; try again")
         with db.tx(conn):
             cx = core.create(conn, rt, p, user_id=user["id"] if personal else None, created_by=user["id"],
                              tokens=tokens, ident=ident)
@@ -255,7 +258,8 @@ def register(app, d) -> None:
         if not ev:
             raise HTTPException(404, "event not found")
         with db.tx(conn):
-            conn.execute("UPDATE inbound_events SET status='pending', attempts=0, error=NULL WHERE id=?", (eid,))
+            conn.execute("UPDATE inbound_events SET status='pending', attempts=0, error=NULL, next_at=NULL"
+                         " WHERE id=?", (eid,))
             c.log("connection.replay", cid, {"event": eid, "kind": ev["kind"]})
         return {"status": core.apply_event(conn, eid)}
 
@@ -263,13 +267,15 @@ def register(app, d) -> None:
 
     @app.api_route("/hooks/{key}/{cid}", methods=["POST", "GET"], include_in_schema=False)
     async def inbound(key: str, cid: str, request: Request):
+        body = await request.body()
+        headers = {k.lower(): v for k, v in request.headers.items()}
+        return await asyncio.to_thread(receive, key, cid, body, headers, dict(request.query_params))
+
+    def receive(key: str, cid: str, body: bytes, headers: dict, query: dict):
         p = REGISTRY.get(key)
         cx = core.get(conn, cid)
         if not p or not cx or cx.provider != key or cx["status"] != "active":
             raise HTTPException(404, "not found")
-        body = await request.body()
-        headers = {k.lower(): v for k, v in request.headers.items()}
-        query = dict(request.query_params)
         rt = Runtime(conn, cx.tenant_id)
         if hasattr(p, "handshake"):  # e.g. Microsoft Graph's validationToken echo
             hs = p.handshake(rt, cx, headers, body, query)
@@ -281,25 +287,29 @@ def register(app, d) -> None:
             payload = json.loads(body) if body else {}
         except ValueError:
             raise HTTPException(400, "not JSON")
-        stored = []
-        for ext, kind, item in p.split(headers, payload):
-            eid = core.store_event(conn, cx, ext, kind, item)
-            if eid:
-                stored.append(eid)
+        stored = [e for e in (core.store_event(conn, cx, ext, kind, item) for ext, kind, item in p.split(headers, payload))
+                  if e]
         if getattr(p, "nudge", False):
             core.kick()
             return JSONResponse({"stored": len(stored)}, status_code=202)
-        results = [await asyncio.to_thread(core.apply_event, conn, e) for e in stored]
-        return {"stored": len(stored), "results": results}
+        return {"stored": len(stored), "results": [core.apply_event(conn, e) for e in stored]}
 
     # ---------------------------------------------------------- live updates
 
     @app.get("/api/stream")
-    async def stream(request: Request, c: Ctx = Depends(ctx), max_events: int = 0, poll: float = 2.0):
+    async def stream(request: Request, c: Ctx = Depends(ctx), max_events: int = 0, poll: float = 2.0,
+                     authorization: str = Header(default="")):
         """Server-sent events: `change` whenever anything in the workspace is recorded.
         The console refreshes what it's showing; nothing about the change itself is sent."""
         tid = c.tenant_id
-        poll = min(max(poll, 0.05), 10.0)
+        poll = min(max(poll, 0.25), 10.0)
+
+        def still_signed_in() -> bool:
+            try:
+                ctx(authorization)
+                return True
+            except HTTPException:
+                return False
 
         def seq() -> int:
             r = conn.execute("SELECT MAX(seq) s FROM audit WHERE tenant_id=?", (tid,)).fetchone()
@@ -325,6 +335,8 @@ def register(app, d) -> None:
                     idle += poll
                     if idle >= 15:
                         idle = 0.0
+                        if not await asyncio.to_thread(still_signed_in):  # signed out or expired: stop
+                            break
                         yield ": keep-alive\n\n"
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

@@ -1,0 +1,30 @@
+# A free, self-resetting demo on Render. New > Blueprint > pick this repo, and set the
+# Blueprint path to render.free.yaml.
+#
+# Free web services sleep after 15 minutes idle and take about a minute to wake. The demo
+# keeps its data in SQLite on the service's own disk, which is wiped on every restart or
+# deploy; it seeds itself again on start and resets every hour anyway. That's right for a
+# demo and wrong for real work: use render.yaml (always on, Postgres) for that.
+services:
+  - type: web
+    name: fieldwork-demo
+    plan: free
+    runtime: python
+    buildCommand: pip install .
+    startCommand: fieldwork migrate && fieldwork seed --if-empty && fieldwork serve --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: FIELDWORK_DB
+        value: /tmp/fieldwork-demo.db
+      - key: FIELDWORK_KEY_FILE
+        value: /tmp/fieldwork-demo.key
+      - key: FIELDWORK_PUBLIC_URL       # the demo's https URL, e.g. https://fieldwork-demo.onrender.com
+        sync: false
+      - key: FIELDWORK_ACCESS_PASSWORD  # optional: keep the demo private
+        sync: false
+      - key: FIELDWORK_DEMO
+        value: "1"
+      - key: FIELDWORK_DEMO_RESET_MINUTES
+        value: "60"

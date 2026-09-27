@@ -172,7 +172,7 @@ def register(app) -> None:
             who = me.json()
             return JSONResponse({"jsonrpc": "2.0", "id": mid, "result": {
                 "protocolVersion": ver, "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "fieldwork", "title": who["branding"]["product_name"], "version": "0.6.0"},
+                "serverInfo": {"name": "fieldwork", "title": who["branding"]["product_name"], "version": "0.7.0"},
                 "instructions": (f"You are working in {who['tenant']['name']}'s deployment workspace as "
                                  f"{who['user']['name']} ({who['user']['role_name']}). Engine results are saved as "
                                  "findings that another person must confirm; say so rather than presenting them as final.")}})

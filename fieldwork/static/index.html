@@ -100,6 +100,8 @@ h3{margin:0;font-size:14px;font-weight:600}
 .kpi.alert{border-color:var(--badline)}
 
 /* ------------------------------------------------------------ chips */
+@media (max-width:900px){.int-split{grid-template-columns:minmax(0,1fr)!important}.int-split #tooldetail{position:static!important}}
+.livedot{display:none;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.06em;color:var(--good);align-items:center;gap:5px}.livedot.on{display:inline-flex}.livedot::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--good)}
 .chip{font-family:'IBM Plex Mono',monospace;font-size:11px;padding:3px 8px;border-radius:4px;background:var(--panel2);color:var(--muted);white-space:nowrap;display:inline-flex;align-items:center;gap:5px;line-height:1.3}
 .chip.accent{background:var(--accentbg);color:var(--accent)}
 .chip.warn{background:var(--warnbg);color:var(--warn)}
@@ -152,7 +154,8 @@ h3{margin:0;font-size:14px;font-weight:600}
 .tbl tr.click:hover td{background:var(--selbg)}
 .tbl .nm{font-weight:500}
 .tbl .sm{font-size:12px;color:var(--muted)}
-.tblwrap{overflow-x:auto}
+.tblwrap{overflow-x:auto;max-width:100%}
+.grid>*{min-width:0}
 .tfoot{display:flex;gap:18px;padding:12px 18px;flex-wrap:wrap}
 
 /* ---------------------------------------------------------- buttons */
@@ -331,6 +334,8 @@ const sunIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" sty
 function signOut() {
   if (S.token && S.token.startsWith("fwsess_")) fetch("/api/auth/logout", { method: "POST", headers: { Authorization: "Bearer " + S.token } }).catch(() => {});
   S.token = null; S.me = null; S.cfg = null; S.cache = {};
+  if (S.streamReader) { try { S.streamReader.cancel(); } catch (e) {} S.streamReader = null; }
+  S.streaming = false;
   try { sessionStorage.removeItem("fw_token"); } catch (e) {}
   history.replaceState(null, "", location.pathname); applyBrand(); renderSignIn();
 }
@@ -340,7 +345,14 @@ async function signIn(token) {
   try { sessionStorage.setItem("fw_token", S.token); } catch (e) {}
   await loadConfig();
   if (S.pendingDep) { location.hash = "#/dep/" + S.pendingDep; S.pendingDep = null; }
-  route();
+  await route();
+  startStream();
+  if (S.flash) {
+    const f = S.flash;
+    if (f.connected) toast(`${(TOOLS.flatMap(g => g.items).find(t => t.key === f.connected) || { name: f.connected }).name} connected`);
+    if (f.oauth_error) toast(f.oauth_error, true);
+    S.flash = null;
+  }
 }
 async function loadConfig() { const c = await api("/api/config"); S.cfg = c.config; S.meta = c; S.engines = c.engines; applyBrand(); }
 function lastWorkspace() { try { return localStorage.getItem("fw_ws") || ""; } catch (e) { return ""; } }
@@ -458,7 +470,7 @@ function shell({ nav, ctx }) {
     </nav>
     <main class="main">
       <header class="top"><div class="ctx">${ctx}</div>
-        <div class="me"><span class="who">${esc(S.me.user.name)} · ${esc(S.me.user.role_name)}</span>
+        <div class="me"><span id="live" class="livedot ${S.live ? "on" : ""}" title="Screens update as things change">LIVE</span><span class="who">${esc(S.me.user.name)} · ${esc(S.me.user.role_name)}</span>
           <button class="btn sm" aria-label="Switch between light and dark mode" data-on="${on(() => { setTheme(theme() === "dark" ? "light" : "dark"); route(); })}">${sunIcon}${t === "dark" ? "Light mode" : "Dark mode"}</button>
           <button class="avatar chip ${KIND_CHIP[kind()][1]}" id="avatar" aria-label="Account" data-on="${on(userMenu)}">${esc(initials(S.me.user.name))}</button></div>
       </header>
@@ -842,7 +854,8 @@ async function pipelineView() {
       <div style="font-size:13.5px;font-weight:500">${esc(d.name)}</div>
       <div class="small muted">${esc(d.use_case || d.customer)}</div>
       <div class="row nowrap" style="justify-content:space-between;margin-top:2px"><span class="mono small">${money(d.value)}${d.stage !== "won" ? ` <span class="muted">· ${pct(d.probability)}</span>` : ""}</span><span class="mono xs muted">${d.expected_start ? "start " + fmtDate(d.expected_start) : ""}</span></div>
-      ${d.stage !== "won" ? `<div>${staffingLabel(d.staffing)}</div>` : ""}
+      ${d.stage !== "won" ? `<div>${staffingLabel(d.staffing)}</div>` : d.deployment_id ? `<a class="small" href="#/dep/${esc(d.deployment_id)}">Deployment →</a>` : can("deployment.create") ? `<button class="btn xs primary" data-on="${on(async () => { const r = await api(`/api/opportunities/${d.id}/open-deployment`, { method: "POST" }); toast("Deployment opened"); go("dep/" + r.deployment_id); })}">Open deployment</button>` : ""}
+      ${d.source && !["console", "import"].includes(d.source) ? `<span class="mono xs muted">from ${esc(d.source)}</span>` : ""}
       ${edit ? `<select data-chg="${mv}" aria-label="Stage for ${esc(d.name)}" style="height:28px;font-size:12px">${["lead", "qualified", "proposal", "commit", "won", "lost"].map(s => `<option value="${s}" ${s === d.stage ? "selected" : ""}>${s[0].toUpperCase() + s.slice(1)}</option>`).join("")}</select>` : ""}
     </div>`;
   };
@@ -950,7 +963,7 @@ function capacityPanel(t) {
       const frac = p.available ? p.planned / p.available : 0;
       const c = p.over > 0 ? "var(--bad)" : frac >= 0.9 ? "var(--warn)" : "var(--good)";
       return `<div class="capacity"><div style="min-width:0"><div style="font-size:13.5px;font-weight:500">${esc(p.name)}</div><div class="xs muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.allocations.map(a => esc(a.deployment.split(" ").slice(0, 2).join(" "))).join(", ") || "not allocated"}</div></div>
-        ${bar(frac, c)}<span class="mono small" style="color:${c}">${num(p.planned)} / ${num(p.available)}</span></div>`;
+        ${bar(frac, c)}<span class="mono small" style="color:${c}" title="${p.off_days && p.off_days.length ? `Out ${p.off_days.length} day(s) this week` : ""}">${num(p.planned)} / ${num(p.available)}${p.off_days && p.off_days.length ? ` <span class="blue">· out ${p.off_days.length}d</span>` : ""}</span></div>`;
     }).join("") || `<div class="empty">Nobody has weekly hours set. Set them on the Team page.</div>`}
     <div class="small muted" style="border-top:1px solid var(--line);padding-top:12px">Planned hours are each person's allocation on active deployments times their weekly hours. ${t.logged ? `${num(t.logged)} h logged so far this week.` : ""}</div></div>`;
 }
@@ -1030,6 +1043,7 @@ async function workView() {
   });
   const quick = logTodayBtn(w);
   const mine = p.deployments;
+  const [offPanel, connPanel] = await Promise.all([timeOffPanel(w), yourConnectionsPanel()]);
   const days = [...Array(7)].map((_, i) => { const d = parseDay(w.week); d.setDate(d.getDate() + i); const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; return { iso, label: DOW[d.getDay()], h: (w.by_day.find(x => x.day === iso) || {}).hours || 0 }; });
   const maxH = Math.max(8, ...days.map(d => d.h));
   page(`<div class="headrow"><div><h1>My work</h1><p class="lede">${plural(open.length, "open task")} across ${plural(new Set(open.map(t => t.deployment_id)).size, "deployment")}. Marking one blocked opens a delay; someone confirms who it's waiting on.</p></div>${dayChip()}</div>
@@ -1046,7 +1060,8 @@ async function workView() {
           <label class="field"><span>Hours</span><input id="tm_h" type="number" step="0.25" min="0.25" max="24" value="1"></label>
           <label class="field"><span>Deployment</span><select id="tm_dep"><option value="">Internal / other</option>${mine.map(d => `<option value="${esc(d.id)}">${esc(d.customer)} · ${esc(d.name)}</option>`).join("")}</select></label>
           <div><button class="btn primary" data-on="${log}">Log</button></div></div>
-          <div class="xs muted">Teams that already track time elsewhere can import a CSV instead.</div></div>
+          <div class="xs muted">Teams that already track time in Harvest or Toggl can connect it under Integrations.</div></div>
+        ${offPanel}${connPanel}
       </div></div>`);
 }
 </script>
@@ -1161,7 +1176,7 @@ async function depOverview(d, row, reload) {
       <div class="row">${pauseBtn(d, row)}${yc("deployment.edit") ? `<span class="label">Health</span><select data-chg="${health}" aria-label="Health">${["on_track", "at_risk", "blocked"].map(h => `<option value="${h}" ${h === d.health ? "selected" : ""}>${h.replace("_", " ")}</option>`).join("")}</select>` : ""}<span class="label" title="Health you set, plus open flags">Status</span>${statusDot(row.status || d.health)}</div></div>
     ${holdForm(d)}${holdHtml(d, row)}
     ${stepper(d, row)}
-    <div class="panel" style="flex-direction:row;align-items:center;flex-wrap:wrap;gap:16px"><div style="flex:1;min-width:260px"><div class="label">Exit criteria · ${esc(stage.name)}</div><div style="margin-top:4px">${esc(stage.exit_criteria || "None set")}</div></div>${moverHtml(d)}</div>
+    <div class="panel" style="flex-direction:row;align-items:center;flex-wrap:wrap;gap:16px"><div style="flex:1;min-width:260px"><div class="label">Exit criteria · ${esc(stage.name)}</div><div style="margin-top:4px">${esc(stage.exit_criteria || "None set")}</div>${row.last_contact ? `<div class="xs muted" style="margin-top:6px" title="From team members' opted-in mailboxes: which customer, which direction, when">Customer last wrote ${row.last_contact.inbound_days != null ? `${Math.round(row.last_contact.inbound_days)} d ago` : "—"} · team last wrote ${row.last_contact.outbound_days != null ? `${Math.round(row.last_contact.outbound_days)} d ago` : "—"}</div>` : ""}</div>${moverHtml(d)}</div>
     <div class="grid g4">
       ${kpi("Days in stage", `<span class="${row.overrun ? "bad" : ""}">${row.days_in_stage}</span>`, `target ${row.target_days ?? "—"} d`, row.overrun ? "alert" : "")}
       ${kpi("Hours burned", row.burn != null ? pct(row.burn) : num(row.hours_spent) + " h", row.budget_hours ? `${num(row.hours_spent)} of ${num(row.budget_hours)} h${row.progress != null ? ` at ${pct(row.progress)} of the calendar` : ""}` : "set a budget in Plan", row.burn != null && row.progress != null && row.burn - row.progress > 0.2 ? "alert" : "")}
@@ -1464,69 +1479,105 @@ async function benchPage(d, reload) {
 <script>
 "use strict";
 /* ======================================================== integrations */
+const SYNC_ARROWS = { Out: "←", In: "→" };
 const TOOLS = [
   { group: "Work trackers", why: "Tasks sync both ways; a blocked issue opens a delay.", items: [
-    { key: "github", name: "GitHub Issues", ini: "GH", color: "#8b949e", role: "Two-way task sync", dir: "Both ways", sync: "On change, webhooks back", auth: "Fine-grained token",
-      map: [["issue title", "task title"], ["open / closed", "status"], ["label: blocked", "blocked → delay"], ["issue URL", "task link"]],
-      auto: ["A task created on a linked deployment opens an issue in the repo", "Closing the issue marks the task done", "Adding the blocked label opens a delay with a proposed owner"],
-      powers: ["Chains", "Delay ledger", "My work"], guard: "Changes that arrive from GitHub are never echoed back. Inbound webhooks must be signed with this workspace's secret." },
-    { key: "linear", name: "Linear", ini: "LN", color: "#8a8ff0", role: "Two-way task sync", dir: "Both ways", sync: "On change, webhooks back", auth: "API key",
-      map: [["issue title", "task title"], ["workflow state", "status"], ["blocked state", "blocked → delay"], ["issue URL", "task link"]],
-      auto: ["Tasks on a linked deployment become issues on the team", "State changes in Linear update the task", "Moving an issue to a blocked state opens a delay"],
-      powers: ["Chains", "Delay ledger", "My work"], guard: "Inbound webhooks are verified with the signing secret; nothing Linear sends is echoed back." },
-    { key: "jira", name: "Jira", ini: "JR", color: "#4c9aff", role: "Two-way task sync", dir: "Both ways", sync: "On change, webhooks back", auth: "Account email + API token",
-      map: [["summary", "task title"], ["status category", "status"], ["Blocked status", "blocked → delay"], ["issue key", "task link"]],
-      auto: ["Tasks on a linked deployment become issues in the project", "Status changes flow back", "A Blocked status opens a delay"],
-      powers: ["Chains", "Delay ledger", "My work"], guard: "Inbound webhooks must carry this workspace's secret. Assignee sync isn't built yet." },
+    { key: "github", name: "GitHub Issues", ini: "GH", color: "#8b949e", role: "Two-way task sync", dir: "Both ways", sync: "As it happens, reconciled nightly", auth: "One-click install (OAuth app)",
+      map: [["issue title", "task title"], ["open / closed", "status"], ["label: blocked", "blocked → delay"], ["assignee", "assignee"]],
+      auto: ["Linking a deployment to a repo creates a signed webhook there", "A task created here opens an issue; closing the issue marks it done", "Assignees follow people by email, or by the mapping in settings"],
+      powers: ["Chains", "Delay ledger", "My work"], guard: "Changes that arrive from GitHub are never echoed back. Deliveries are signed per connection and stored before they're applied." },
+    { key: "linear", name: "Linear", ini: "LN", color: "#8a8ff0", role: "Two-way task sync", dir: "Both ways", sync: "As it happens, reconciled nightly", auth: "One-click install (OAuth app)",
+      map: [["issue title", "task title"], ["workflow state", "status"], ["assignee", "assignee"], ["issue URL", "task link"]],
+      auto: ["Tasks on a linked deployment become issues on the team", "State and assignee changes in Linear update the task", "Missed a webhook? The nightly reconcile catches it"],
+      powers: ["Chains", "Delay ledger", "My work"], guard: "The app's webhook is verified with its signing secret; nothing Linear sends is echoed back." },
+    { key: "jira", name: "Jira", ini: "JR", color: "#4c9aff", role: "Two-way task sync", dir: "Both ways", sync: "As it happens, reconciled nightly", auth: "One-click install (Atlassian OAuth)",
+      map: [["summary", "task title"], ["status category", "status"], ["assignee", "assignee"], ["issue key", "task link"]],
+      auto: ["Linking a project registers a Jira webhook for it", "Jira expires webhooks after 30 days; they're renewed every 25", "Status and assignee changes flow back"],
+      powers: ["Chains", "Delay ledger", "My work"], guard: "Deliveries are verified with the app's signed token. Nothing Jira sends is echoed back." },
   ] },
-  { group: "Alerts", why: "Where the team hears about it.", items: [
-    { key: "slack", name: "Slack", ini: "SL", color: "#e3a7d8", role: "Channel alerts and a daily digest", dir: "Out", sync: "As it happens, digest weekdays", auth: "Incoming webhook URL",
-      map: [["task blocked", "alert"], ["flag raised", "alert"], ["delay opened", "confirm prompt"], ["agent approval", "alert"]],
-      auto: ["Posts the events you pick to one channel", "Sends a weekday digest of blocked and overdue work", "Retries with backoff if Slack is down"],
-      powers: ["Flags", "Delay ledger", "Approvals"], guard: "Outbound only. The webhook URL is stored encrypted. Slash commands and DMs aren't built yet." },
+  { group: "Chat and alerts", why: "Where the team hears about it, and answers.", items: [
+    { key: "slack", name: "Slack", ini: "SL", color: "#e3a7d8", role: "Alerts with buttons, DMs, /fieldwork", dir: "Both ways", sync: "As it happens, digest weekdays", auth: "One-click install (Slack app)",
+      map: [["delay opened", "confirm / reassign"], ["flag raised", "take / resolve"], ["agent approval", "approve / reject"], ["task blocked", "waiting on…"], ["task assigned", "DM: start / done"]],
+      auto: ["Buttons run as the person who pressed them, with their permissions", "/fieldwork today and /fieldwork status <deployment>", "Retries with backoff if Slack is down"],
+      powers: ["Flags", "Delay ledger", "Approvals", "My work"], guard: "Every request from Slack is signature-checked. People are matched by their Slack email; nobody matched, nothing changes." },
     { key: "webhooks", name: "Event webhooks", ini: "WH", color: "#9aa0a8", role: "Signed JSON to any system", dir: "Out", sync: "As it happens", auth: "HMAC signature per endpoint",
-      map: [["every event", "POST"], ["X-Fieldwork-Signature", "sha256"], ["deployment", "payload"]],
+      map: [["every event", "POST"], ["X-Fieldwork-Signature", "sha256"], ["ids", "payload"]],
       auto: ["Posts events to your endpoints, signed", "Retries with backoff up to six times"], powers: ["Anything you build"], guard: "Private addresses are refused; redirects aren't followed; responses are size-capped." },
   ] },
-  { group: "Identity", why: "Who gets in.", items: [
+  { group: "CRM", why: "What the pipeline board and staffing check run on.", items: [
+    { key: "salesforce", name: "Salesforce", ini: "SF", color: "#4aa3df", role: "Opportunities into the pipeline", dir: "In", sync: "Every 15 minutes, reconciled nightly", auth: "One-click install (OAuth)",
+      map: [["Opportunity", "deal"], ["Amount", "value"], ["Probability / stage", "stage"], ["Close date", "expected start"], ["Account", "customer"]],
+      auto: ["Every open deal gets a staffing check against real capacity", "A won deal becomes a deployment in one click (or automatically)", "Stages map by probability, or by name in settings"],
+      powers: ["Pipeline", "Chains"], guard: "Read-only. Nothing is written back to Salesforce." },
+    { key: "hubspot", name: "HubSpot", ini: "HS", color: "#ff7a59", role: "Deals into the pipeline", dir: "In", sync: "As deals change, reconciled nightly", auth: "One-click install (OAuth app)",
+      map: [["Deal", "deal"], ["Amount", "value"], ["Deal stage", "stage"], ["Close date", "expected start"], ["Company", "customer"]],
+      auto: ["Deal changes arrive as signed webhooks and sync straight away", "A won deal becomes a deployment in one click"], powers: ["Pipeline", "Chains"], guard: "Read-only. Webhooks are verified with HubSpot's v3 signature." },
+    { key: "pipeline_csv", name: "CRM export", ini: "CR", color: "#e07a6a", role: "Any CRM, as a CSV", dir: "In", sync: "When you import", auth: "None (upload)",
+      map: [["opportunity", "deal"], ["amount", "value"], ["probability", "probability"], ["id", "upsert key"]],
+      auto: ["Re-importing updates deals by their CRM id"], powers: ["Pipeline"], guard: "For CRMs without a live connection.", importKind: "pipeline" },
+  ] },
+  { group: "Time", why: "What utilization, burn and the budget rule run on.", items: [
+    { key: "harvest", name: "Harvest", ini: "HV", color: "#f36c00", role: "Time entries", dir: "In", sync: "Every 30 minutes, reconciled nightly", auth: "One-click install (OAuth)",
+      map: [["person email", "person"], ["project", "deployment"], ["spent date", "day"], ["hours", "hours"]],
+      auto: ["Projects match deployments by name, or by the mapping below", "Edits there update here; deletions are removed at the nightly reconcile", "Time on other projects still counts toward the week"],
+      powers: ["Team", "Portfolio", "Burn"], guard: "Read-only. People are matched by email." },
+    { key: "toggl", name: "Toggl Track", ini: "TG", color: "#e57cd8", role: "Time entries", dir: "In", sync: "Every 30 minutes, reconciled nightly", auth: "Workspace admin API token",
+      map: [["user email", "person"], ["project", "deployment"], ["start", "day"], ["duration", "hours"]],
+      auto: ["Reads everyone's time through the Reports API", "Running timers wait until they stop"], powers: ["Team", "Portfolio", "Burn"], guard: "Read-only. The token is stored encrypted." },
+    { key: "time_csv", name: "Timesheets", ini: "TS", color: "#5fb98a", role: "A PSA or anything else, as a CSV", dir: "In", sync: "When you import", auth: "None (upload)",
+      map: [["email", "person"], ["day", "day"], ["hours", "hours"]], auto: ["People can also log time in My work"], powers: ["Team", "Portfolio"], guard: "For tools without a live connection.", importKind: "time" },
+  ] },
+  { group: "Calendars", why: "Time off, so capacity is real. Each person connects their own.", items: [
+    { key: "google_calendar", name: "Google Calendar", ini: "GC", color: "#4285f4", role: "Out-of-office days", dir: "In", sync: "As it changes, hourly behind it", auth: "Each person signs in",
+      map: [["Out of office", "day off"], ["all-day PTO / vacation", "day off"]], auto: ["Days out come off that person's available hours", "Meetings and other events are never stored"], powers: ["Team", "Pipeline"], guard: "Read-only. Only time off is kept." },
+    { key: "outlook_calendar", name: "Outlook Calendar", ini: "OC", color: "#0f6cbd", role: "Away days", dir: "In", sync: "As it changes, hourly behind it", auth: "Each person signs in",
+      map: [["Show as: Away", "day off"], ["all-day PTO / vacation", "day off"]], auto: ["Days out come off that person's available hours", "Meetings and other events are never stored"], powers: ["Team", "Pipeline"], guard: "Read-only. Only time off is kept." },
+  ] },
+  { group: "Email signal", why: "Opt-in: when the customer last heard from you, and you from them.", items: [
+    { key: "gmail", name: "Gmail", ini: "GM", color: "#ea4335", role: "Last customer contact", dir: "In", sync: "Every 30 minutes", auth: "Each person opts in",
+      map: [["From / To domain", "customer"], ["date", "last contact"]], auto: ["Shows last contact on every deployment", "Flags an active deployment when the customer goes quiet"], powers: ["Chains", "Flags"], guard: "Headers only. Keeps the customer, the direction and the time. Never subjects, bodies or addresses." },
+    { key: "outlook_mail", name: "Outlook Mail", ini: "OM", color: "#0078d4", role: "Last customer contact", dir: "In", sync: "Every 30 minutes", auth: "Each person opts in",
+      map: [["From / To domain", "customer"], ["date", "last contact"]], auto: ["Shows last contact on every deployment", "Flags an active deployment when the customer goes quiet"], powers: ["Chains", "Flags"], guard: "Headers only. Keeps the customer, the direction and the time. Never subjects, bodies or addresses." },
+  ] },
+  { group: "Identity and AI", why: "Who gets in, and agents that act as a person.", items: [
     { key: "sso", name: "Company sign-in", ini: "ID", color: "#6fa3d9", role: "Okta, Entra ID, Google Workspace, any OpenID Connect", dir: "In", sync: "At sign-in", auth: "OIDC with PKCE",
       map: [["email", "person"], ["domain", "allowed?"], ["first sign-in", "account (optional)"]],
-      auto: ["People sign in with your identity provider", "Optionally create accounts on first sign-in with a role you pick", "Optionally require it for everyone"],
-      powers: ["Everything"], guard: "Checks issuer, audience, expiry, nonce and domain. SAML and SCIM aren't built yet." },
-  ] },
-  { group: "AI tools", why: "Agents act as a person, with their permissions.", items: [
+      auto: ["People sign in with your identity provider", "Optionally require it for everyone"], powers: ["Everything"], guard: "Checks issuer, audience, expiry, nonce and domain." },
     { key: "mcp", name: "MCP server", ini: "AI", color: "#c9a0dc", role: "Claude, Cursor, Codex, Gemini, OpenAI, Grok", dir: "Both ways", sync: "On request", auth: "Personal access token",
-      map: [["today", "what needs me"], ["create_task", "task"], ["run_engine", "finding"], ["request_approval", "approval"], ["log_delay", "delay"]],
-      auto: ["An agent reads deployments, works tasks and runs engines as its person", "Actions that touch a customer system ask a person first", "Everything it does is on the audit trail under that person"],
-      powers: ["Approvals", "My work", "Stages"], guard: "Engine results an agent produces still need a second person to confirm them. OAuth for ChatGPT and Claude.ai connectors is on the roadmap." },
+      map: [["today", "what needs me"], ["create_task", "task"], ["request_approval", "approval"], ["log_delay", "delay"]],
+      auto: ["An agent works as its person, with their permissions", "Actions that touch a customer system ask a person first"], powers: ["Approvals", "My work", "Stages"], guard: "Everything an agent does is on the audit trail under its person." },
     { key: "engines", name: "Your engines", ini: "EN", color: "#e8b25c", role: "Your scripts, as signed webhooks or pushes", dir: "Both ways", sync: "On run, or when your script posts", auth: "Signing secret or engine token",
-      map: [["input", "your service"], ["summary + status", "finding"], ["result", "details"]],
-      auto: ["Run your own checks from any stage, next to the built-ins", "Scripts inside a customer network can push results in"], powers: ["Stages"], guard: "Webhooks are signed; push tokens are stored as hashes. Results are findings someone else confirms." },
-  ] },
-  { group: "Time and people", why: "What capacity and burn run on.", items: [
-    { key: "time_csv", name: "Timesheets", ini: "TS", color: "#5fb98a", role: "Harvest, Toggl, a PSA: any CSV export", dir: "In", sync: "When you import", auth: "None (upload)",
-      map: [["email", "person"], ["day", "day"], ["hours", "hours"], ["project", "deployment"]],
-      auto: ["Hours feed utilization, burn and the budget rule", "People can also log time in My work"], powers: ["Team", "Portfolio", "Projects"], guard: "Native Harvest and Toggl sync aren't built yet; import their CSV export.", importKind: "time" },
-    { key: "calendar", name: "Calendar and time off", ini: "CA", color: "#6b717a", role: "Time off against capacity", notYet: true, guard: "Not built yet. Set weekly hours per person on the Team page for now." },
-  ] },
-  { group: "CRM", why: "What the pipeline board and staffing check run on.", items: [
-    { key: "pipeline_csv", name: "CRM export", ini: "CR", color: "#e07a6a", role: "Salesforce, HubSpot: opportunities as CSV", dir: "In", sync: "When you import", auth: "None (upload)",
-      map: [["opportunity", "deal"], ["amount", "value"], ["probability", "probability"], ["close / start", "expected start"], ["id", "upsert key"]],
-      auto: ["Re-importing updates deals by their CRM id", "Every open deal gets a staffing check against real capacity"], powers: ["Pipeline"], guard: "Native Salesforce and HubSpot sync aren't built yet; import a report export.", importKind: "pipeline" },
-  ] },
-  { group: "Email", why: "Unanswered customer threads.", items: [
-    { key: "email", name: "Gmail and Outlook", ini: "EM", color: "#6b717a", role: "Customer silence as a delay signal", notYet: true, guard: "Not built yet. Log a delay by hand, or have an agent do it with log_delay." },
+      map: [["input", "your service"], ["summary + status", "finding"]], auto: ["Run your own checks from any stage, next to the built-ins"], powers: ["Stages"], guard: "Results are findings someone else confirms." },
   ] },
 ];
 
+const ago = iso => {
+  if (!iso) return "never";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`;
+};
+const HEALTH = { healthy: ["HEALTHY", "good"], stale: ["QUIET", "warn"], erroring: ["ERRORS", "bad"], needs_reauth: ["RECONNECT", "bad"], disconnected: ["OFF", ""] };
+
+async function startConnect(key) {
+  const r = await api(`/api/connections/${key}/start`, { method: "POST" });
+  location.href = r.url;
+}
+
 async function integrationsView() {
-  const [cov, info] = await Promise.all([api("/api/coverage"), api("/api/integrations")]);
+  const [cov, info, cat] = await Promise.all([api("/api/coverage"), api("/api/integrations"), api("/api/connections")]);
   const cfg = JSON.parse(JSON.stringify(S.cfg));
+  const provs = Object.fromEntries(cat.providers.map(p => [p.key, p]));
   const all = TOOLS.flatMap(g => g.items);
   const statusOf = t => {
-    if (t.notYet) return ["not built yet", false];
-    if (t.key in cov.trackers) { const x = cov.trackers[t.key]; return x.enabled && x.connected ? [`connected · ${cov.tracker_links[t.key] || 0} linked`, true] : x.enabled ? ["needs a token", false] : ["off", false]; }
-    if (t.key === "slack") return cov.slack.enabled && cov.slack.connected ? ["connected", true] : cov.slack.connected ? ["connected · off", false] : ["off", false];
+    const p = provs[t.key];
+    if (p) {
+      if (p.personal) return p.people_connected ? [`${plural(p.people_connected, "person", "people")} connected`, true] : p.configured ? ["nobody yet", false] : ["needs app setup", false];
+      const c = p.connections.find(x => x.status !== "disconnected");
+      if (c) { const [lab] = HEALTH[c.health.state] || [c.health.state]; return [`${c.account_name} · ${lab.toLowerCase()}`, c.health.state === "healthy" || c.health.state === "stale"]; }
+      if (t.key in cov.trackers && cov.trackers[t.key].enabled && cov.trackers[t.key].connected) return ["connected with a token", true];
+      if (t.key === "slack" && cov.slack.enabled && cov.slack.connected) return ["webhook only", true];
+      return p.configured ? ["not connected", false] : ["needs app setup", false];
+    }
     if (t.key === "webhooks") return cov.webhooks ? [`${cov.webhooks} endpoint${cov.webhooks > 1 ? "s" : ""}`, true] : ["none", false];
     if (t.key === "sso") return cov.sso.enabled ? [cov.sso.required ? "required" : "on", true] : ["off", false];
     if (t.key === "mcp") return cov.personal_tokens ? [`${cov.personal_tokens} token${cov.personal_tokens > 1 ? "s" : ""}`, true] : ["no tokens yet", false];
@@ -1535,77 +1586,239 @@ async function integrationsView() {
     if (t.key === "pipeline_csv") return cov.opportunities ? [`${cov.opportunities} deals`, true] : ["no deals yet", false];
     return ["", false];
   };
+  const live = k => { const p = provs[k]; return !!p && (p.personal ? p.people_connected > 0 : p.connections.some(c => c.status === "active")); };
+  const anyLive = (...ks) => ks.some(live);
+  const trackerOn = anyLive("github", "linear", "jira") || Object.values(cov.trackers).some(x => x.enabled && x.connected);
   const connected = all.filter(t => statusOf(t)[1]).length;
+  if (S.flash && S.flash.connected && provs[S.flash.connected]) S.intSel = S.flash.connected;
   const sel = all.find(t => t.key === S.intSel) || all[0];
   const coverage = [
-    ["Chains", [cov.deployments > 0, cov.tasks > 0], cov.deployments ? `${cov.deployments} deployments · ${cov.tasks} tasks` : "import deployments"],
-    ["Stages", [cov.findings > 0, cov.custom_engines >= 0], cov.findings ? `${cov.findings} engine results` : "run an engine"],
-    ["Capacity", [cov.people_with_hours > 0, cov.allocations > 0, cov.time_entries_30d > 0], !cov.time_entries_30d ? "needs time data" : !cov.allocations ? "needs allocations" : "hours, allocations, time"],
-    ["Pipeline", [cov.opportunities > 0], cov.opportunities ? `${cov.opportunities} deals` : "import a CRM export"],
-    ["Delay ledger", [cov.delays_confirmed > 0, Object.values(cov.trackers).some(x => x.enabled && x.connected)], !Object.values(cov.trackers).some(x => x.enabled && x.connected) ? "connect a tracker for more signals" : `${cov.delays_confirmed} confirmed`],
-    ["Alerts", [cov.slack.enabled && cov.slack.connected, cov.webhooks > 0], cov.slack.enabled && cov.slack.connected ? "Slack on" : "connect Slack"],
+    ["Chains", [cov.deployments > 0, trackerOn], trackerOn ? `${cov.deployments} deployments · tasks in sync` : "connect a tracker"],
+    ["Capacity", [cov.people_with_hours > 0, cov.time_entries_30d > 0, anyLive("google_calendar", "outlook_calendar")], !cov.time_entries_30d ? "needs time data" : !anyLive("google_calendar", "outlook_calendar") ? "calendars add time off" : "hours, time, time off"],
+    ["Pipeline", [cov.opportunities > 0, anyLive("salesforce", "hubspot")], anyLive("salesforce", "hubspot") ? "live from the CRM" : cov.opportunities ? `${cov.opportunities} deals from import` : "connect the CRM"],
+    ["Burn", [cov.time_entries_30d > 0, anyLive("harvest", "toggl")], anyLive("harvest", "toggl") ? "live from timesheets" : cov.time_entries_30d ? "from logged or imported time" : "needs time data"],
+    ["Delay ledger", [cov.delays_confirmed > 0, trackerOn], trackerOn ? `${cov.delays_confirmed} confirmed` : "connect a tracker for more signals"],
+    ["Alerts", [live("slack") || (cov.slack.enabled && cov.slack.connected), live("slack")], live("slack") ? "Slack app with buttons" : cov.slack.connected ? "webhook only: install the app for buttons" : "connect Slack"],
   ].map(([view, parts, missing]) => {
-    const f = parts.filter(Boolean).length / parts.length; const live = f === 1;
-    return `<div class="panel ${live ? "goodline" : ""}" style="padding:14px 16px;gap:8px"><div class="phead"><span style="font-size:13px;font-weight:600">${esc(view)}</span><span class="chip ${live ? "good" : f ? "warn" : ""}" style="font-size:10px">${live ? "LIVE" : f ? "PARTIAL" : "NO DATA"}</span></div>${bar(f, live ? "var(--good)" : "var(--warn)", "thin")}<div class="xs muted">${esc(missing)}</div></div>`;
+    const f = parts.filter(Boolean).length / parts.length; const ok = f === 1;
+    return `<div class="panel ${ok ? "goodline" : ""}" style="padding:14px 16px;gap:8px"><div class="phead"><span style="font-size:13px;font-weight:600">${esc(view)}</span><span class="chip ${ok ? "good" : f ? "warn" : ""}" style="font-size:10px">${ok ? "LIVE" : f ? "PARTIAL" : "NO DATA"}</span></div>${bar(f, ok ? "var(--good)" : "var(--warn)", "thin")}<div class="xs muted">${esc(missing)}</div></div>`;
   }).join("");
   const tiles = TOOLS.map(g => `<div class="stack" style="gap:8px"><div class="row" style="align-items:baseline;gap:10px"><span class="label">${esc(g.group)}</span><span class="small muted">${esc(g.why)}</span></div>
-    <div class="grid g3" style="gap:8px">${g.items.map(t => { const [st, ok] = statusOf(t); return `<button class="tile ${t.key === sel.key ? "on" : ""}" data-on="${on(() => { S.intSel = t.key; route(); })}"><span class="mark ${ok ? "" : "off"}" style="background:${t.color}">${esc(t.ini)}</span><span class="l" style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-size:13.5px;font-weight:500">${esc(t.name)}</span><span class="mono xs ${ok ? "good" : "muted"}">${esc(st)}</span></span></button>`; }).join("")}</div></div>`).join("");
-  page(`<div class="headrow"><div><h1>Integrations</h1><p class="lede">Every source a screen needs to run on live data. Connect a tool and watch which screens go live. ${esc(brand().product_name)} reads from the tools your team already uses and writes back only where it says so.</p></div><span class="mono small muted">${connected} of ${all.length} connected</span></div>
-    <div class="grid" style="grid-template-columns:repeat(6,minmax(0,1fr));gap:12px">${coverage}</div>
-    <div class="grid" style="grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);align-items:start">
+    <div class="grid g3" style="gap:8px">${g.items.map(t => { const [st, ok] = statusOf(t); return `<button class="tile ${t.key === sel.key ? "on" : ""}" data-on="${on(() => { S.intSel = t.key; route(); })}"><span class="mark ${ok ? "" : "off"}" style="background:${t.color}">${esc(t.ini)}</span><span class="l" style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-size:13.5px;font-weight:500">${esc(t.name)}</span><span class="mono xs ${ok ? "good" : "muted"}" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(st)}</span></span></button>`; }).join("")}</div></div>`).join("");
+  page(`<div class="headrow"><div><h1>Integrations</h1><p class="lede">Connect the tools your team already uses and the screens run on live data: installs are one click, changes arrive as they happen, and everything is reconciled nightly so a missed webhook costs minutes, not data.</p></div><span class="mono small muted">${connected} of ${all.length} connected</span></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">${coverage}</div>
+    <div class="grid int-split" style="grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);align-items:start">
       <div class="stack lg">${tiles}</div>
-      <div class="panel" style="gap:16px;position:sticky;top:0">${toolDetail(sel, statusOf(sel), cfg, info)}</div></div>`);
+      <div class="panel" id="tooldetail" style="gap:16px;position:sticky;top:0">${toolDetail(sel, statusOf(sel), cfg, info, provs[sel.key], cat)}</div></div>`);
+  const p = provs[sel.key];
+  const c = p && p.connections.find(x => x.status !== "disconnected" && !x.personal);
+  if (c) act(connectionDetail)(c.id, sel);
 }
 
-function toolDetail(t, [st, ok], cfg, info) {
+function setupHtml(p, cat) {
+  const txt = (p.setup || "").split("{public}").join(cat.public_url);
+  return `<div class="sub-card" style="gap:8px"><div class="row nowrap"><span class="chip warn">NEEDS APP SETUP</span><span class="small muted">once per install of ${esc(brand().product_name)}</span></div>
+    <div class="small text2" style="line-height:1.5">${esc(txt)}</div>
+    ${p.auth === "oauth" ? `<div class="stack" style="gap:4px"><div class="label" style="font-size:10px">Callback / redirect URL</div><code class="code" style="font-size:11.5px">${esc(cat.redirect_uri)}</code></div>` : ""}
+    ${p.env_needed.length ? `<div class="stack" style="gap:4px"><div class="label" style="font-size:10px">Then set, where it runs</div>${p.env_needed.map(e => `<code class="code" style="font-size:11.5px">${esc(e)}</code>`).join("")}</div>` : ""}</div>`;
+}
+
+function connectBtn(p, label) {
+  if (!p.configured) return "";
+  if (p.auth === "token") {
+    const go_ = on(async () => {
+      const token = val("tk_" + p.key); if (!token) { toast("Paste the token first", true); return; }
+      await api(`/api/connections/${p.key}/token`, { method: "POST", body: { token, account: val("tka_" + p.key) || "" } });
+      toast(`${p.name} connected`); route();
+    });
+    return `<div class="stack" style="gap:8px"><label class="field"><span>API token</span><input id="tk_${p.key}" type="password" autocomplete="off"></label>
+      <label class="field"><span>Workspace id <span class="muted">(optional; defaults to the token owner's)</span></span><input id="tka_${p.key}" class="mono"></label>
+      <div><button class="btn primary sm" data-on="${go_}">${esc(label || "Connect")}</button></div></div>`;
+  }
+  return `<button class="btn primary sm" data-on="${on(() => startConnect(p.key))}">${esc(label || `Connect ${p.name}`)}</button>`;
+}
+
+function toolDetail(t, [st, ok], cfg, info, p, cat) {
+  const head = `<div class="row nowrap" style="justify-content:space-between;align-items:flex-start"><div class="row nowrap" style="gap:12px"><span class="mark lg" style="background:${t.color}">${esc(t.ini)}</span><div><div style="font-size:18px;font-weight:600">${esc(t.name)}</div><div class="small muted">${esc(t.role)}</div></div></div><span class="chip ${ok ? "good" : "warn"}">${esc(upper(st))}</span></div>`;
+  const facts = `<div class="grid g3" style="gap:10px">${[["Direction", t.dir], ["Sync", t.sync], ["Auth", t.auth]].map(([k, v]) => `<div class="sub-card" style="padding:10px 12px;gap:4px"><div class="label" style="font-size:10px">${k}</div><div style="font-size:13px">${esc(v)}</div></div>`).join("")}</div>`;
+  const mapping = `<div class="stack" style="gap:8px"><div class="label">What it syncs</div><div style="border:1px solid var(--line);border-radius:8px;overflow:hidden"><div class="mapgrid h"><span>${esc(upper(t.name))}</span><span></span><span>${esc(upper(brand().product_name))}</span></div>
+      ${t.map.map(([a, b]) => `<div class="mapgrid"><span class="mono small text2">${esc(a)}</span><span class="mono small accent">${SYNC_ARROWS[t.dir] || "↔"}</span><span>${esc(b)}</span></div>`).join("")}</div></div>`;
+  const autos = `<div class="stack" style="gap:8px"><div class="label">Automations</div>${t.auto.map(a => `<div class="row nowrap small" style="align-items:flex-start"><span class="mono good">→</span><span>${esc(a)}</span></div>`).join("")}</div>
+    <div class="stack" style="gap:8px"><div class="label">Powers</div><div class="row" style="gap:6px">${t.powers.map(x => `<span class="chip blue">${esc(x)}</span>`).join("")}</div></div>`;
+  const foot = `<div class="xs muted" style="border-top:1px solid var(--line);padding-top:12px;line-height:1.5">${esc(t.guard)}${p && !p.verified ? " Built against the vendor's published API; the first live connection is where any rough edge will show, and its health will say so." : ""}</div>`;
+  let controls = "";
+  if (p && p.personal) {
+    const mine = p.connections.find(c => c.status !== "disconnected");
+    controls = `<div class="small text2">Each person connects their own${p.people_connected ? `: ${plural(p.people_connected, "person has", "people have")} so far` : ""}. They'll find it under <a href="#/work">My work</a>.</div>
+      ${!p.configured ? setupHtml(p, cat) : mine ? `<div class="small">Yours: <b>${esc(mine.account_name)}</b> · ${esc((HEALTH[mine.health.state] || [mine.health.state])[0].toLowerCase())}</div>` : p.you_can_connect ? `<div>${connectBtn(p, "Connect yours")}</div>` : ""}`;
+  } else if (p) {
+    const c = p.connections.find(x => x.status !== "disconnected");
+    controls = !p.configured ? setupHtml(p, cat) : c ? `<div id="cxdetail"><div class="muted small">Loading…</div></div>` : `<div class="stack" style="gap:8px"><div>${connectBtn(p)}</div>${["github", "linear", "jira"].includes(t.key) ? `<div class="xs muted">Then link a deployment to a repo, team or project from its Overview page.</div>` : ""}</div>`;
+    if (["github", "linear", "jira"].includes(t.key)) controls += `<details><summary class="small">Use a pasted token instead</summary><div class="stack" style="margin-top:10px">${legacyTracker(t, cfg, info)}</div></details>`;
+    if (t.key === "slack") controls += slackControls(cfg, info, !!c);
+  } else controls = otherControls(t, cfg, info);
+  return `${head}${facts}${mapping}${autos}<div class="divider"></div><div class="stack">${controls}</div>${foot}`;
+}
+
+async function connectionDetail(cid, t) {
+  const box = $("#cxdetail"); if (!box) return;
+  const [x, evs] = await Promise.all([api(`/api/connections/${cid}`), api(`/api/connections/${cid}/events`)]);
+  const h = x.health; const [hl, hc] = HEALTH[h.state] || [upper(h.state), ""];
+  const redraw = () => connectionDetail(cid, t);
+  const sync = full => on(async () => { const r = await api(`/api/connections/${cid}/sync`, { method: "POST", body: { full } }); const got = Object.entries(r.result || {}).filter(([, v]) => v).map(([k, v]) => `${v} ${k.replace(/_/g, " ")}`).join(", "); toast(full ? "Reconciled" + (got ? ": " + got : "") : (got ? "Synced: " + got : "Synced, nothing new")); route(); });
+  const drop = on(async () => { const r = await api(`/api/connections/${cid}`, { method: "DELETE" }); toast(r.cleanup_error ? `Disconnected (cleanup: ${r.cleanup_error})` : "Disconnected"); route(); });
+  const settings = { ...x.settings };
+  const saveSettings = on(async () => { await api(`/api/connections/${cid}/settings`, { method: "PATCH", body: { settings } }); toast("Saved"); redraw(); });
+  const fieldHtml = f => {
+    if (f.type === "bool") { const hh = on(el => { settings[f.key] = el.checked; }); return `<label class="row" style="gap:8px;font-size:13px"><input type="checkbox" ${settings[f.key] ? "checked" : ""} data-chg="${hh}"> ${esc(f.label)}</label>`; }
+    if (f.type === "map") {
+      const m = settings[f.key] || {};
+      const rows = Object.entries(m).map(([k, v]) => { const del = on(() => { delete m[k]; settings[f.key] = m; H[saveSettings](); }); return `<div class="row nowrap small"><span class="mono">${esc(k)}</span><span class="muted">→</span><span style="flex:1">${esc(v)}</span><button class="btn xs ghost" data-on="${del}">Remove</button></div>`; }).join("");
+      const add = on(() => { const a = val(`mk_${f.key}`).trim(), b = val(`mv_${f.key}`).trim(); if (!a || !b) return; settings[f.key] = { ...m, [a]: b }; H[saveSettings](); });
+      return `<div class="stack" style="gap:6px"><div class="label" style="font-size:10px">${esc(f.label)}</div>${f.help ? `<div class="xs muted">${esc(f.help)}</div>` : ""}${rows}
+        <div class="row nowrap"><input id="mk_${f.key}" placeholder="from" style="flex:1"><input id="mv_${f.key}" placeholder="to" style="flex:1"><button class="btn xs" data-on="${add}">Add</button></div></div>`;
+    }
+    const hh = on(el => { settings[f.key] = el.value; });
+    return `<label class="field"><span>${esc(f.label)}${f.help ? ` <span class="muted">· ${esc(f.help)}</span>` : ""}</span><input value="${esc(settings[f.key] ?? "")}" data-chg="${hh}"></label>`;
+  };
+  const projects = (x.options && x.options.projects) || [];
+  const projMap = projects.length ? `<div class="stack" style="gap:6px"><div class="label" style="font-size:10px">Projects → deployments</div>
+      ${projects.slice(0, 40).map(pr => { const hh = on(async el => { const m = { ...(settings.project_map || {}) }; if (el.value) m[pr.id] = el.value; else delete m[pr.id]; settings.project_map = m; H[saveSettings](); });
+        return `<div class="row nowrap small"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(pr.name)}${pr.client ? ` <span class="muted">· ${esc(pr.client)}</span>` : ""}</span><select data-chg="${hh}" style="height:28px;font-size:12px;max-width:50%"><option value="">Internal / not a deployment</option>${x.options.deployments.map(dd => `<option value="${esc(dd.id)}" ${dd.id === pr.deployment_id ? "selected" : ""}>${esc(dd.name)}</option>`).join("")}</select></div>`; }).join("")}</div>` : "";
+  const fields = (x.settings_fields || []).filter(f => f.key !== "project_map");
+  const evRows = evs.slice(0, 8).map(e => { const rp = on(async () => { const r = await api(`/api/connections/${cid}/events/${e.id}/replay`, { method: "POST" }); toast("Replayed: " + r.status); redraw(); });
+    return `<div class="row nowrap xs"><span class="mono muted" style="width:62px">${esc(ago(e.received_at))}</span><span class="mono" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(e.kind || "event")}</span><span class="chip ${e.status === "done" ? "good" : e.status === "failed" ? "bad" : e.status === "pending" ? "warn" : ""}" style="font-size:9.5px">${esc(upper(e.status))}</span>${e.status !== "done" ? `<button class="btn xs" data-on="${rp}">Replay</button>` : ""}</div>${e.error ? `<div class="xs bad" style="margin-left:70px">${esc(e.error)}</div>` : ""}`; }).join("");
+  box.innerHTML = `<div class="stack" style="gap:12px">
+    <div class="row nowrap" style="justify-content:space-between"><div><div style="font-weight:600">${esc(x.account_name)}</div><div class="xs muted">connected ${esc(ago(x.created_at))}</div></div><span class="chip ${hc}">${esc(hl)}</span></div>
+    <div class="grid g3" style="gap:8px">${[["Last event", ago(h.last_event_at)], ["Last sync", ago(h.last_sync_at)], ["Reconciled", ago(h.last_reconcile_at)]].map(([k, v]) => `<div class="sub-card" style="padding:8px 10px;gap:2px"><div class="label" style="font-size:9.5px">${k}</div><div class="mono small">${esc(v)}</div></div>`).join("")}</div>
+    ${h.last_error ? `<div class="sub-card" style="border-color:var(--bad)"><div class="xs bad">${esc(h.last_error)}</div>${h.retry_at ? `<div class="xs muted">next try ${esc(fmtDate(h.retry_at))} ${new Date(h.retry_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>` : ""}</div>` : ""}
+    ${x.status === "needs_reauth" ? `<div><button class="btn primary sm" data-on="${on(() => startConnect(x.provider))}">Reconnect ${esc(x.name)}</button></div>` : ""}
+    <div class="row"><button class="btn sm" data-on="${sync(false)}">Sync now</button><button class="btn sm" data-on="${sync(true)}">Full reconcile</button><button class="btn sm danger" data-on="${drop}">Disconnect</button></div>
+    ${projMap}
+    ${fields.length ? `<div class="stack" style="gap:8px"><div class="label">Settings</div>${fields.map(fieldHtml).join("")}<div><button class="btn primary sm" data-on="${saveSettings}">Save settings</button></div></div>` : ""}
+    <div class="stack" style="gap:6px"><div class="phead"><div class="label">Recent deliveries</div><span class="mono xs muted">${h.events.pending ? `${h.events.pending} pending · ` : ""}${h.events.failed ? `${h.events.failed} failed · ` : ""}${h.events.done} applied</span></div>${evRows || `<div class="xs muted">Nothing received yet.${["salesforce", "harvest", "toggl"].includes(x.provider) ? " This one is polled rather than pushed." : ""}</div>`}</div>
+  </div>`;
+}
+
+function legacyTracker(t, cfg, info) {
   const has = n => info.secrets_set.includes(n);
   const saveCfg = on(async () => { const r = await api("/api/config", { method: "PUT", body: cfg }); S.cfg = r.config; await loadConfig(); toast("Saved"); route(); });
-  const secretRow = (name, label, ph) => {
-    const go_ = on(async () => { const v = val("sec_" + name); if (!v) return; await api("/api/integrations/secret", { method: "PUT", body: { name, value: v } }); toast("Saved, encrypted"); route(); });
-    return `<label class="field"><span>${esc(label)} ${has(name) ? `<b class="good">· set</b>` : `<b class="warn">· not set</b>`}</span><div class="row nowrap"><input id="sec_${name}" type="password" placeholder="${esc(has(name) ? "Enter a new value to replace it" : ph)}" style="flex:1"><button class="btn sm" data-on="${go_}">Save</button></div></label>`;
-  };
-  const inbound = p => {
-    const gen = on(async () => { const r = await api(`/api/integrations/${p}/generate-secret`, { method: "POST" }); $("#gen_" + p).innerHTML = `<div class="secret"><b>Signing secret</b> <span class="muted">· ${esc(r.note)}</span><code>${esc(r.secret)}</code></div>`; });
-    return `<div class="stack" style="gap:6px"><div class="label">Inbound webhook</div><code class="code" style="font-size:11.5px">${esc(info.inbound_webhooks[p])}</code>
-      <div class="row"><span class="small muted">Signing secret ${has(p + "_webhook_secret") ? "set" : "not set"}</span><button class="btn sm" data-on="${gen}">Generate secret</button></div><div id="gen_${p}"></div></div>`;
-  };
+  const c = cfg.integrations[t.key];
+  const fld = (k, label, ph) => { const h = on(el => { c[k] = el.value.trim(); }); return `<label class="field"><span>${esc(label)}</span><input value="${esc(c[k] || "")}" placeholder="${esc(ph || "")}" data-chg="${h}"></label>`; };
+  const sec = { github: "github_token", linear: "linear_api_key", jira: "jira_api_token" }[t.key];
+  const secGo = on(async () => { const v = val("sec_" + sec); if (!v) return; await api("/api/integrations/secret", { method: "PUT", body: { name: sec, value: v } }); toast("Saved, encrypted"); route(); });
+  const gen = on(async () => { const r = await api(`/api/integrations/${t.key}/generate-secret`, { method: "POST" }); $("#gen_" + t.key).innerHTML = `<div class="secret"><b>Signing secret</b> <span class="muted">· ${esc(r.note)}</span><code>${esc(r.secret)}</code></div>`; });
+  const tog = on(el => { c.enabled = el.checked; });
+  return `<label class="row" style="gap:8px;font-size:13px"><input type="checkbox" ${c.enabled ? "checked" : ""} data-chg="${tog}"> Sync with a pasted token</label>
+    ${t.key === "github" ? fld("api_base", "API base") : ""}${t.key === "jira" ? fld("base_url", "Site URL", "https://yourco.atlassian.net") + fld("email", "Account email") : ""}
+    <label class="field"><span>Token ${has(sec) ? `<b class="good">· set</b>` : `<b class="warn">· not set</b>`}</span><div class="row nowrap"><input id="sec_${sec}" type="password" style="flex:1"><button class="btn sm" data-on="${secGo}">Save</button></div></label>
+    <div><button class="btn sm" data-on="${saveCfg}">Save</button></div>
+    <div class="stack" style="gap:6px"><div class="label">Inbound webhook</div><code class="code" style="font-size:11.5px">${esc(info.inbound_webhooks[t.key])}</code>
+      <div class="row"><span class="small muted">Signing secret ${has(t.key + "_webhook_secret") ? "set" : "not set"}</span><button class="btn sm" data-on="${gen}">Generate secret</button></div><div id="gen_${t.key}"></div></div>`;
+}
+
+function slackControls(cfg, info, installed) {
+  const has = n => info.secrets_set.includes(n);
+  const c = cfg.integrations.slack;
+  const saveCfg = on(async () => { const r = await api("/api/config", { method: "PUT", body: cfg }); S.cfg = r.config; await loadConfig(); toast("Saved"); route(); });
   const toggle = (label, get, set) => { const h = on(el => { set(el.checked); }); return `<label class="row" style="gap:8px;font-size:13px"><input type="checkbox" ${get() ? "checked" : ""} data-chg="${h}"> ${esc(label)}</label>`; };
-  let controls = "";
-  if (["github", "linear", "jira"].includes(t.key)) {
-    const c = cfg.integrations[t.key];
-    const fld = (k, label, ph) => { const h = on(el => { c[k] = el.value.trim(); }); return `<label class="field"><span>${esc(label)}</span><input value="${esc(c[k] || "")}" placeholder="${esc(ph || "")}" data-chg="${h}"></label>`; };
-    controls = `${toggle(`Sync tasks with ${t.name}`, () => c.enabled, v => c.enabled = v)}
-      ${t.key === "github" ? fld("api_base", "API base") : ""}${t.key === "jira" ? fld("base_url", "Site URL", "https://yourco.atlassian.net") + fld("email", "Account email") : ""}
-      ${secretRow({ github: "github_token", linear: "linear_api_key", jira: "jira_api_token" }[t.key], { github: "Token (Issues read/write)", linear: "API key", jira: "API token" }[t.key], "paste it here")}
-      <div><button class="btn primary sm" data-on="${saveCfg}">Save</button></div>${inbound(t.key)}
-      <div class="xs muted">Then link a deployment to a repo, team or project from its Overview page.</div>`;
-  } else if (t.key === "slack") {
-    const c = cfg.integrations.slack;
-    const test = on(async () => { await api("/api/integrations/slack/test", { method: "POST" }); toast("Test message sent"); });
-    const prev = on(async () => { const r = await api("/api/digest/preview"); $("#sl_out").innerHTML = `<pre class="code">${esc(r.text)}</pre>`; });
-    const send = on(async () => { await api("/api/digest", { method: "POST" }); toast("Digest queued"); });
-    controls = `${toggle("Post to Slack", () => c.enabled, v => c.enabled = v)}${secretRow("slack_webhook_url", "Incoming webhook URL", "https://hooks.slack.com/services/…")}
-      <div class="label">Post when</div><div class="stack" style="gap:4px">${Object.entries(info.events).map(([e, l]) => toggle(l, () => c.events.includes(e), v => { const s = new Set(c.events); v ? s.add(e) : s.delete(e); c.events = [...s]; })).join("")}</div>
-      <div class="row"><button class="btn primary sm" data-on="${saveCfg}">Save</button><button class="btn sm" data-on="${test}">Send test</button><button class="btn sm" data-on="${prev}">Preview digest</button><button class="btn sm" data-on="${send}">Send digest now</button></div><div id="sl_out"></div>`;
-  } else if (t.key === "webhooks") {
+  const test = on(async () => { await api("/api/integrations/slack/test", { method: "POST" }); toast("Test message sent"); });
+  const prev = on(async () => { const r = await api("/api/digest/preview"); $("#sl_out").innerHTML = `<pre class="code">${esc(r.text)}</pre>`; });
+  const send = on(async () => { await api("/api/digest", { method: "POST" }); toast("Digest queued"); });
+  const secGo = on(async () => { const v = val("sec_slack"); if (!v) return; await api("/api/integrations/secret", { method: "PUT", body: { name: "slack_webhook_url", value: v } }); toast("Saved, encrypted"); route(); });
+  return `<div class="divider"></div>${toggle("Post to the channel", () => c.enabled, v => c.enabled = v)}
+    <div class="label">Post when</div><div class="stack" style="gap:4px">${Object.entries(info.events).map(([e, l]) => toggle(l, () => c.events.includes(e), v => { const s = new Set(c.events); v ? s.add(e) : s.delete(e); c.events = [...s]; })).join("")}</div>
+    <div class="row"><button class="btn primary sm" data-on="${saveCfg}">Save</button><button class="btn sm" data-on="${prev}">Preview digest</button><button class="btn sm" data-on="${send}">Send digest now</button></div><div id="sl_out"></div>
+    ${installed ? "" : `<details><summary class="small">Use an incoming-webhook URL instead (alerts only, no buttons)</summary><div class="stack" style="margin-top:10px">
+      <label class="field"><span>Incoming webhook URL ${has("slack_webhook_url") ? `<b class="good">· set</b>` : ""}</span><div class="row nowrap"><input id="sec_slack" type="password" placeholder="https://hooks.slack.com/services/…" style="flex:1"><button class="btn sm" data-on="${secGo}">Save</button></div></label>
+      <div><button class="btn sm" data-on="${test}">Send test</button></div></div></details>`}`;
+}
+
+function otherControls(t, cfg, info) {
+  const has = n => info.secrets_set.includes(n);
+  if (t.key === "webhooks") {
+    const saveCfg = on(async () => { const r = await api("/api/config", { method: "PUT", body: cfg }); S.cfg = r.config; await loadConfig(); toast("Saved"); route(); });
     const hooks = cfg.integrations.webhooks;
     const add = on(() => { const id = val("wh_id").trim(), url = val("wh_url").trim(); if (!id || !url) { toast("Give it an id and a URL", true); return; } hooks.push({ id, url, events: Object.keys(info.events) }); H[saveCfg](); });
-    controls = `${hooks.map((h, i) => { const gen = on(async () => { const r = await api(`/api/integrations/${h.id}/generate-secret`, { method: "POST" }); $("#gen_" + h.id).innerHTML = `<div class="secret"><b>Signing secret</b><code>${esc(r.secret)}</code></div>`; }); const del = on(() => { hooks.splice(i, 1); H[saveCfg](); });
+    return `${hooks.map((h, i) => { const gen = on(async () => { const r = await api(`/api/integrations/${h.id}/generate-secret`, { method: "POST" }); $("#gen_" + h.id).innerHTML = `<div class="secret"><b>Signing secret</b><code>${esc(r.secret)}</code></div>`; }); const del = on(() => { hooks.splice(i, 1); H[saveCfg](); });
       return `<div class="sub-card"><div class="row nowrap"><span class="mono small">${esc(h.id)}</span><span class="small muted" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(h.url)}</span></div><div class="row">${has("webhook:" + h.id) ? `<span class="xs good">secret set</span>` : ""}<button class="btn xs" data-on="${gen}">Generate secret</button><button class="btn xs danger" data-on="${del}">Remove</button></div><div id="gen_${esc(h.id)}"></div></div>`; }).join("")}
       <div class="row nowrap"><input id="wh_id" class="mono" placeholder="id" style="width:90px"><input id="wh_url" placeholder="https://…" style="flex:1"><button class="btn sm" data-on="${add}">Add</button></div>`;
-  } else if (t.key === "sso") controls = `<a class="btn primary sm" href="#/settings" data-on="${on(() => { S.settingsTab = "sso"; go("settings"); })}">Set up in Settings</a>`;
-  else if (t.key === "mcp") controls = `<a class="btn primary sm" href="#/ai">Set up an AI tool</a>`;
-  else if (t.key === "engines") controls = `<a class="btn primary sm" href="#/settings" data-on="${on(() => { S.settingsTab = "engines"; go("settings"); })}">Register an engine</a>`;
-  else if (t.importKind) controls = `<a class="btn primary sm" href="#/import" data-on="${on(() => { S.importKind = t.importKind; go("import"); })}">Import a CSV</a>`;
-  return `<div class="row nowrap" style="justify-content:space-between;align-items:flex-start"><div class="row nowrap" style="gap:12px"><span class="mark lg" style="background:${t.color}">${esc(t.ini)}</span><div><div style="font-size:18px;font-weight:600">${esc(t.name)}</div><div class="small muted">${esc(t.role)}</div></div></div><span class="chip ${ok ? "good" : t.notYet ? "" : "warn"}">${esc(upper(st))}</span></div>
-    ${t.notYet ? `<div class="small text2">${esc(t.guard)}</div>` : `
-    <div class="grid g3" style="gap:10px">${[["Direction", t.dir], ["Sync", t.sync], ["Auth", t.auth]].map(([k, v]) => `<div class="sub-card" style="padding:10px 12px;gap:4px"><div class="label" style="font-size:10px">${k}</div><div style="font-size:13px">${esc(v)}</div></div>`).join("")}</div>
-    <div class="stack" style="gap:8px"><div class="label">What it syncs</div><div style="border:1px solid var(--line);border-radius:8px;overflow:hidden"><div class="mapgrid h"><span>${esc(upper(t.name))}</span><span></span><span>${esc(upper(brand().product_name))}</span></div>
-      ${t.map.map(([a, b]) => `<div class="mapgrid"><span class="mono small text2">${esc(a)}</span><span class="mono small accent">${t.dir === "Out" ? "←" : t.dir === "In" ? "→" : "↔"}</span><span>${esc(b)}</span></div>`).join("")}</div></div>
-    <div class="stack" style="gap:8px"><div class="label">Automations</div>${t.auto.map(a => `<div class="row nowrap small" style="align-items:flex-start"><span class="mono good">→</span><span>${esc(a)}</span></div>`).join("")}</div>
-    <div class="stack" style="gap:8px"><div class="label">Powers</div><div class="row" style="gap:6px">${t.powers.map(p => `<span class="chip blue">${esc(p)}</span>`).join("")}</div></div>
-    <div class="divider"></div><div class="stack">${controls}</div>
-    <div class="xs muted" style="border-top:1px solid var(--line);padding-top:12px;line-height:1.5">${esc(t.guard)}</div>`}`;
+  }
+  if (t.key === "sso") return `<a class="btn primary sm" href="#/settings" data-on="${on(() => { S.settingsTab = "sso"; go("settings"); })}">Set up in Settings</a>`;
+  if (t.key === "mcp") return `<a class="btn primary sm" href="#/ai">Set up an AI tool</a>`;
+  if (t.key === "engines") return `<a class="btn primary sm" href="#/settings" data-on="${on(() => { S.settingsTab = "engines"; go("settings"); })}">Register an engine</a>`;
+  if (t.importKind) return `<a class="btn primary sm" href="#/import" data-on="${on(() => { S.importKind = t.importKind; go("import"); })}">Import a CSV</a>`;
+  return "";
+}
+
+/* Personal connections and time off, on My work */
+async function yourConnectionsPanel() {
+  if (!can("task.view_internal")) return "";
+  let cat;
+  try { cat = await api("/api/connections"); } catch (e) { return ""; }
+  const mine = cat.providers.filter(p => p.personal);
+  if (!mine.length) return "";
+  const rows = mine.map(p => {
+    const c = p.connections.find(x => x.status !== "disconnected");
+    const drop = c && on(async () => { await api(`/api/connections/${c.id}`, { method: "DELETE" }); toast(`${p.name} disconnected; what it collected is deleted`); route(); });
+    const [hl, hc] = c ? (HEALTH[c.health.state] || [upper(c.health.state), ""]) : ["", ""];
+    return `<div class="row nowrap" style="gap:10px;padding:6px 0;border-top:1px solid var(--line)"><div style="flex:1;min-width:0"><div style="font-size:13.5px;font-weight:500">${esc(p.name)} <span class="xs muted">· ${esc(p.category === "email" ? "opt-in email signal" : "time off")}</span></div>
+      <div class="xs muted">${c ? `${esc(c.account_name)} · synced ${esc(ago(c.health.last_sync_at))}` : esc(p.blurb)}</div></div>
+      ${c ? `<span class="chip ${hc}" style="font-size:9.5px">${esc(hl)}</span><button class="btn xs" data-on="${drop}">Disconnect</button>` : p.configured ? `<button class="btn xs primary" data-on="${on(() => startConnect(p.key))}">Connect</button>` : `<span class="xs muted">not set up yet</span>`}</div>`;
+  }).join("");
+  return `<div class="panel" style="gap:6px"><div class="label">Your connections</div><div class="xs muted" style="margin-bottom:4px">Calendars subtract the days you're out from your capacity. Email is opt-in and keeps only which customer, which direction and when.</div>${rows}</div>`;
+}
+
+async function timeOffPanel(w) {
+  if (!can("task.view_internal")) return "";
+  const offs = (await api("/api/time-off")).filter(o => o.user_id === S.me.user.id);
+  const add = on(async () => { await api("/api/time-off", { method: "POST", body: { start_on: val("to_s"), end_on: val("to_e") || val("to_s"), title: val("to_t") || "Time off" } }); toast("Time off added"); route(); });
+  return `<div class="panel" style="gap:8px"><div class="phead"><div class="label">Time off</div>${w.off_days && w.off_days.length ? `<span class="mono xs warn">out ${plural(w.off_days.length, "day")} this week</span>` : ""}</div>
+    ${offs.map(o => { const del = !o.connection_id && on(async () => { await api(`/api/time-off/${o.id}`, { method: "DELETE" }); route(); });
+      return `<div class="row nowrap small"><span style="flex:1">${esc(o.title)} <span class="muted">· ${esc(o.source.replace(/_/g, " "))}</span></span><span class="mono xs">${fmtDate(o.start_on)}${o.end_on !== o.start_on ? " – " + fmtDate(o.end_on) : ""}</span>${del ? `<button class="btn xs ghost" data-on="${del}">Remove</button>` : ""}</div>`; }).join("") || `<div class="xs muted">Nothing coming up.</div>`}
+    <details><summary class="small">Add time off</summary><div class="formgrid" style="margin-top:8px">
+      <label class="field"><span>From</span><input id="to_s" type="date" value="${todayIso()}"></label><label class="field"><span>To</span><input id="to_e" type="date"></label>
+      <label class="field"><span>What</span><input id="to_t" placeholder="Vacation"></label><div><button class="btn sm primary" data-on="${add}">Add</button></div></div></details></div>`;
+}
+
+/* Live updates: the server says something changed; the current screen refreshes itself. */
+function startStream() {
+  if (S.streaming || !S.token) return;
+  S.streaming = true;
+  const gen = (S.streamGen = (S.streamGen || 0) + 1);
+  const tok = S.token; let backoff = 3000, timer = null;
+  const setLive = on_ => { const el = $("#live"); if (el) el.classList.toggle("on", on_); S.live = on_; };
+  const refresh = () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const a = document.activeElement;
+      const busy = a && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) || document.querySelector("details[open] input:not([type=checkbox])") || $("#menu");
+      if (busy || document.visibilityState !== "visible") { refresh(); return; }
+      const sc = document.querySelector(".scroll"); const top = sc ? sc.scrollTop : 0;
+      invalidate(); await route();
+      const sc2 = document.querySelector(".scroll"); if (sc2) sc2.scrollTop = top;
+    }, 1200);
+  };
+  (async function loop() {
+    while (S.token === tok && S.streamGen === gen) {
+      try {
+        const r = await fetch("/api/stream", { headers: { Authorization: "Bearer " + tok } });
+        if (!r.ok || !r.body) throw new Error("stream " + r.status);
+        setLive(true); backoff = 3000;
+        const reader = r.body.getReader(); S.streamReader = reader; const dec = new TextDecoder(); let buf = "";
+        while (S.token === tok) {
+          const { value, done } = await reader.read(); if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i; while ((i = buf.indexOf("\n\n")) >= 0) { const chunk = buf.slice(0, i); buf = buf.slice(i + 2); if (/^event: change/m.test(chunk)) refresh(); }
+        }
+        try { reader.cancel(); } catch (e) {}
+      } catch (e) {}
+      setLive(false);
+      if (S.token !== tok) break;
+      await new Promise(res => setTimeout(res, backoff)); backoff = Math.min(backoff * 2, 60000);
+    }
+    if (S.streamGen === gen) S.streaming = false;
+  })();
 }
 
 /* ============================================================ settings */
@@ -1782,6 +1995,12 @@ setTheme(theme());
 applyBrand();
 (async function boot() {
   try { const r = await fetch("/api/demo"); S.demo = r.ok; } catch (e) {}
+  // One-click installs come back as ?connected=<provider> or ?oauth_error=<reason>.
+  const qs = new URLSearchParams(location.search);
+  if (qs.has("connected") || qs.has("oauth_error")) {
+    S.flash = { connected: qs.get("connected"), oauth_error: qs.get("oauth_error") };
+    history.replaceState(null, "", location.pathname + location.hash);
+  }
   // Company sign-in returns with the session (or an error) in the fragment, which browsers never send to servers.
   const frag = new URLSearchParams(location.hash.slice(1));
   if (frag.has("session") || frag.has("sso_error") || frag.has("dep")) history.replaceState(null, "", location.pathname);

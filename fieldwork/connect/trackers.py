@@ -102,7 +102,10 @@ class TrackerApp(Provider):
         return changed
 
     def after_connect(self, rt, cx):
-        for target in _repos_for(rt.conn, rt.tenant_id, self.key):
+        linked = sorted(_repos_for(rt.conn, rt.tenant_id, self.key))
+        with rt.conn.tx():  # targets already linked by the workspace are the install's to serve
+            core.save(rt.conn, cx, extra={**cx.extra, "targets": sorted({*(cx.extra.get("targets") or []), *linked})})
+        for target in linked:
             ensure_webhook(rt.conn, rt.tenant_id, self.key, target)
 
 
@@ -118,7 +121,10 @@ class GitHubApp(TrackerApp):
     setup = ("Register an OAuth App (GitHub → Settings → Developer settings → OAuth Apps) with the callback URL "
              "above. Repos linked to a deployment get their webhook created for you.")
 
-    def api(self, rt) -> str:
+    def api(self, rt, cx=None) -> str:
+        """The API host is fixed when the app is installed, so the token can't later be pointed elsewhere."""
+        if cx is not None:
+            return (cx.extra.get("api_base") or "https://api.github.com").rstrip("/")
         return rt.cfg["integrations"]["github"]["api_base"].rstrip("/")
 
     def authorize_params(self, state, challenge):
@@ -136,12 +142,12 @@ class GitHubApp(TrackerApp):
     def identify(self, rt, tokens):
         me = http.call("GET", f"{self.api(rt)}/user", "GitHub profile", bearer=tokens["access_token"])
         return {"external_account_id": str(me.get("id", "")), "account_name": me.get("login", "GitHub"),
-                "extra": {"login": me.get("login")}}
+                "extra": {"login": me.get("login"), "api_base": self.api(rt)}}
 
     def lookup_email(self, rt, cx, info):
         if not info.get("login"):
             return None
-        u = http.call("GET", f"{self.api(rt)}/users/{info['login']}", "GitHub user",
+        u = http.call("GET", f"{self.api(rt, cx)}/users/{info['login']}", "GitHub user",
                       bearer=core.access_token(rt.conn, cx))
         return u.get("email")
 
@@ -150,7 +156,7 @@ class GitHubApp(TrackerApp):
         if target in hooks:
             return {"status": "exists"}
         secret = cx.webhook.get("secret") or secrets.token_urlsafe(32)
-        r = http.call("POST", f"{self.api(rt)}/repos/{target}/hooks", "GitHub webhook",
+        r = http.call("POST", f"{self.api(rt, cx)}/repos/{target}/hooks", "GitHub webhook",
                       bearer=core.access_token(rt.conn, cx),
                       json_body={"name": "web", "active": True, "events": ["issues"],
                                  "config": {"url": core.hook_url("github", cx.id), "content_type": "json",
@@ -162,7 +168,7 @@ class GitHubApp(TrackerApp):
     def before_disconnect(self, rt, cx):
         tok = core.access_token(rt.conn, cx)
         for target, hid in cx.webhook.get("repos", {}).items():
-            http.request("DELETE", f"{self.api(rt)}/repos/{target}/hooks/{hid}", bearer=tok)
+            http.request("DELETE", f"{self.api(rt, cx)}/repos/{target}/hooks/{hid}", bearer=tok)
 
     def verify(self, rt, cx, headers, body, query):
         secret = cx.webhook.get("secret")
@@ -188,9 +194,11 @@ class GitHubApp(TrackerApp):
             target = json.loads(link["sync_json"] or "{}").get("target")
             if not target:
                 continue
-            r = http.request("GET", f"{self.api(rt)}/repos/{target}/issues/{link['external_id']}", bearer=tok)
+            num = link["external_id"].rsplit("#", 1)[-1]
+            r = http.request("GET", f"{self.api(rt, cx)}/repos/{target}/issues/{num}", bearer=tok)
             if r.ok:
-                changes += sync.GitHub.parse({"x-github-event": "issues"}, {"issue": r.json()})
+                changes += sync.GitHub.parse({"x-github-event": "issues"},
+                                             {"issue": r.json(), "repository": {"full_name": target}})
         return {"checked": len(changes), "changed": len(self.apply(rt, cx, changes))}
 
 
@@ -212,7 +220,8 @@ class LinearApp(TrackerApp):
         return super().env_needed() + ["FIELDWORK_LINEAR_WEBHOOK_SECRET"]
 
     def gql(self, rt, cx, query: str, variables: dict | None = None, token: str | None = None) -> dict:
-        api = rt.cfg["integrations"]["linear"]["api_base"].rstrip("/") + "/graphql"
+        base = (cx.extra.get("api_base") if cx is not None else None) or rt.cfg["integrations"]["linear"]["api_base"]
+        api = base.rstrip("/") + "/graphql"
         r = http.call("POST", api, "Linear request", json_body={"query": query, "variables": variables or {}},
                       bearer=token or core.access_token(rt.conn, cx))
         if r.get("errors"):
@@ -223,7 +232,8 @@ class LinearApp(TrackerApp):
         d = self.gql(rt, None, "{ viewer { id name email } organization { id name urlKey } }",
                      token=tokens["access_token"])
         return {"external_account_id": d["organization"]["id"], "account_name": d["organization"]["name"],
-                "extra": {"url_key": d["organization"].get("urlKey"), "installed_by": d["viewer"].get("email")}}
+                "extra": {"url_key": d["organization"].get("urlKey"), "installed_by": d["viewer"].get("email"),
+                          "api_base": rt.cfg["integrations"]["linear"]["api_base"].rstrip("/")}}
 
     def lookup_email(self, rt, cx, info):
         if not info.get("id"):
@@ -236,6 +246,7 @@ class LinearApp(TrackerApp):
 
     def routes(self, app, d):
         conn = d.conn
+        prov = self
 
         @app.post("/hooks/linear/app", include_in_schema=False)
         async def linear_app(request: Request):
@@ -246,18 +257,21 @@ class LinearApp(TrackerApp):
                 raise HTTPException(401, "bad signature")
             p = json.loads(body or b"{}")
             ts = p.get("webhookTimestamp")
-            if isinstance(ts, (int, float)) and abs(time.time() * 1000 - ts) > 5 * 60 * 1000:
+            if not isinstance(ts, (int, float)) or abs(time.time() * 1000 - ts) > 60 * 1000:  # Linear's advice
                 raise HTTPException(401, "stale delivery")
-            data = p.get("data") or {}
-            ext = f"{p.get('webhookId', '')}:{data.get('id', '')}:{data.get('updatedAt', p.get('createdAt', ''))}"
-            results = []
-            for r in conn.execute("SELECT * FROM connections WHERE provider='linear' AND status='active'"
-                                  " AND external_account_id=?", (p.get("organizationId", ""),)).fetchall():
-                eid = core.store_event(conn, core.Conn(r), ext, p.get("type", ""), p)
-                if eid:
-                    import asyncio
-                    results.append(await asyncio.to_thread(core.apply_event, conn, eid))
-            return {"results": results}
+            import asyncio
+            return {"results": await asyncio.to_thread(prov.receive, conn, p)}
+
+    def receive(self, conn, p: dict) -> list:
+        data = p.get("data") or {}
+        ext = f"{p.get('webhookId', '')}:{data.get('id', '')}:{data.get('updatedAt', p.get('createdAt', ''))}"
+        results = []
+        for r in conn.execute("SELECT * FROM connections WHERE provider='linear' AND status='active'"
+                              " AND external_account_id=?", (p.get("organizationId", ""),)).fetchall():
+            eid = core.store_event(conn, core.Conn(r), ext, p.get("type", ""), p)
+            if eid:
+                results.append(core.apply_event(conn, eid))
+        return results
 
     def handle(self, rt, cx, kind, payload):
         if kind == "Issue":
@@ -344,36 +358,49 @@ class JiraApp(TrackerApp):
                       bearer=core.access_token(rt.conn, cx))
         return u.get("emailAddress")
 
-    def ensure(self, rt, cx, target):
-        hooks = cx.webhook.get("projects", {})
-        if target in hooks:
-            return {"status": "exists"}
-        r = http.call("POST", f"{self.base(cx)}/rest/api/3/webhook", "Jira webhook",
-                      bearer=core.access_token(rt.conn, cx), json_body={
-                          "url": core.hook_url("jira", cx.id, cx.webhook.get("key", "")),
-                          "webhooks": [{"events": ["jira:issue_created", "jira:issue_updated"],
-                                        "jqlFilter": f"project = \"{target}\""}]})
+    def _register(self, rt, cx, projects: list) -> None:
+        """One webhook covering every linked project: Jira allows an OAuth app 5 per user per site."""
+        base, tok = self.base(cx), core.access_token(rt.conn, cx)
+        old = cx.webhook.get("webhook_id")
+        if old:
+            http.request("DELETE", f"{base}/rest/api/3/webhook", bearer=tok, json_body={"webhookIds": [old]})
+        jql = "project in (" + ", ".join('"' + p.replace('"', '') + '"' for p in projects) + ")"
+        r = http.call("POST", f"{base}/rest/api/3/webhook", "Jira webhook", bearer=tok, json_body={
+            "url": core.hook_url("jira", cx.id, cx.webhook.get("key", "")),
+            "webhooks": [{"events": ["jira:issue_created", "jira:issue_updated"], "jqlFilter": jql}]})
         res = (r.get("webhookRegistrationResult") or [{}])[0]
         if res.get("errors"):
             raise http.HTTPError(f"Jira webhook: {'; '.join(res['errors'])}")
         with rt.conn.tx():
-            core.save(rt.conn, cx, webhook={**cx.webhook, "projects": {**hooks, target: res.get("createdWebhookId")},
+            core.save(rt.conn, cx, webhook={**cx.webhook, "webhook_id": res.get("createdWebhookId"),
+                                            "projects": projects,
                                             "renew_at": core.iso(core.now() + timedelta(days=25))})
+
+    def ensure(self, rt, cx, target):
+        have = list(cx.webhook.get("projects") or [])
+        if target in have and cx.webhook.get("webhook_id"):
+            return {"status": "exists"}
+        self._register(rt, cx, sorted(set(have) | {target}))
         return {"status": "created"}
 
     def renew(self, rt, cx):
-        ids = [i for i in cx.webhook.get("projects", {}).values() if i]
-        if ids:
-            http.call("PUT", f"{self.base(cx)}/rest/api/3/webhook/refresh", "Jira webhook refresh",
-                      bearer=core.access_token(rt.conn, cx), json_body={"webhookIds": ids})
+        wid = cx.webhook.get("webhook_id")
+        if wid:
+            r = http.request("PUT", f"{self.base(cx)}/rest/api/3/webhook/refresh",
+                             bearer=core.access_token(rt.conn, cx), json_body={"webhookIds": [wid]})
+            if r.status in (400, 404):  # it lapsed while we were away: register it again
+                self._register(rt, cx, list(cx.webhook.get("projects") or []))
+                return
+            if not r.ok:
+                raise http.HTTPError(f"Jira webhook refresh failed ({r.status})", r.status)
         with rt.conn.tx():
             core.save(rt.conn, cx, webhook={**cx.webhook, "renew_at": core.iso(core.now() + timedelta(days=25))})
 
     def before_disconnect(self, rt, cx):
-        ids = [i for i in cx.webhook.get("projects", {}).values() if i]
-        if ids:
+        wid = cx.webhook.get("webhook_id")
+        if wid:
             http.request("DELETE", f"{self.base(cx)}/rest/api/3/webhook", bearer=core.access_token(rt.conn, cx),
-                         json_body={"webhookIds": ids})
+                         json_body={"webhookIds": [wid]})
 
     def verify(self, rt, cx, headers, body, query):
         auth = headers.get("authorization", "")
@@ -399,10 +426,20 @@ class JiraApp(TrackerApp):
         changes = []
         for i in range(0, len(keys), 100):
             chunk = keys[i:i + 100]
-            r = http.call("POST", f"{self.base(cx)}/rest/api/3/search/jql", "Jira search", bearer=tok, json_body={
-                "jql": f"key in ({','.join(chunk)})", "fields": ["summary", "status", "assignee"],
-                "maxResults": 100})
-            for iss in r.get("issues", []):
+            r = http.request("POST", f"{self.base(cx)}/rest/api/3/search/jql", bearer=tok, json_body={
+                "jql": f"key in ({','.join(chunk)})", "fields": ["summary", "status", "assignee"], "maxResults": 100})
+            if r.status == 400:  # a linked issue was deleted or moved: look them up one by one
+                issues = []
+                for k in chunk:
+                    one = http.request("GET", f"{self.base(cx)}/rest/api/3/issue/{k}", bearer=tok,
+                                       params={"fields": "summary,status,assignee"})
+                    if one.ok:
+                        issues.append(one.json())
+            elif not r.ok:
+                raise http.HTTPError(f"Jira search failed ({r.status})", r.status)
+            else:
+                issues = r.json().get("issues", [])
+            for iss in issues:
                 changes += sync.Jira.parse({}, {"webhookEvent": "jira:issue_updated", "issue": iss})
         return {"checked": len(changes), "changed": len(self.apply(rt, cx, changes))}
 

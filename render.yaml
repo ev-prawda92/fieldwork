@@ -1,13 +1,17 @@
-# One-click deploy on Render: New > Blueprint > pick this repo.
-# After the first deploy, set the two secrets marked sync: false in the dashboard.
+# Deploy on Render: New > Blueprint > pick this repo. About $13/month (web service + Postgres).
+# After the first deploy, set the values marked sync: false in the dashboard.
+# The Slack digest and every connector sync run inside the web service; there's no separate cron job.
+# For a free, self-resetting demo instead, use render.free.yaml (see LAUNCH.md).
 databases:
   - name: fieldwork-db
+    plan: basic-256mb
     databaseName: fieldwork
     user: fieldwork
 
 services:
   - type: web
     name: fieldwork
+    plan: starter
     runtime: python
     buildCommand: pip install ".[postgres]"
     startCommand: fieldwork migrate && (if [ "$FIELDWORK_DEMO" = "1" ]; then fieldwork seed --if-empty; fi) && fieldwork serve --host 0.0.0.0 --port $PORT
@@ -17,7 +21,7 @@ services:
         value: "3.11.9"
       - key: FIELDWORK_DATABASE_URL
         fromDatabase: { name: fieldwork-db, property: connectionString }
-      - key: FIELDWORK_SECRET_KEYS      # a Fernet key; see DEPLOY.md
+      - key: FIELDWORK_SECRET_KEYS      # a Fernet key; see LAUNCH.md
         sync: false
       - key: FIELDWORK_ACCESS_PASSWORD  # the password gate; leave empty to make the site public
         sync: false
@@ -25,23 +29,11 @@ services:
         sync: false
       - key: FIELDWORK_OPERATOR_TOKEN   # for /api/operator/metrics
         generateValue: true
+      - key: FIELDWORK_DIGEST_HOUR_UTC  # weekday Slack digest; 12 is 8am New York
+        value: "12"
       - key: FIELDWORK_DEMO
         value: "1"
       - key: FIELDWORK_DEMO_RESET_MINUTES  # public demo resets itself; set 0 for a real workspace
         value: "60"
-
-  - type: cron
-    name: fieldwork-digest
-    runtime: python
-    schedule: "45 12 * * 1-5"   # 8:45am New York on weekdays (UTC)
-    buildCommand: pip install ".[postgres]"
-    startCommand: fieldwork digest
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.9"
-      - key: FIELDWORK_DATABASE_URL
-        fromDatabase: { name: fieldwork-db, property: connectionString }
-      - key: FIELDWORK_SECRET_KEYS
-        sync: false
-      - key: FIELDWORK_PUBLIC_URL
-        sync: false
+      # Connector apps: add FIELDWORK_<PROVIDER>_CLIENT_ID / _CLIENT_SECRET in the dashboard as you
+      # register each one (docs/CONNECTIONS.md). The Integrations page says which are missing.

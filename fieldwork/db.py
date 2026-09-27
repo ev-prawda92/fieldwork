@@ -368,6 +368,7 @@ CREATE TABLE IF NOT EXISTS inbound_events (
     status        TEXT NOT NULL DEFAULT 'pending',
     error         TEXT,
     attempts      INTEGER NOT NULL DEFAULT 0,
+    next_at       TEXT,
     received_at   TEXT NOT NULL,
     processed_at  TEXT
 );

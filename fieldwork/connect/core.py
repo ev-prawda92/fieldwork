@@ -364,10 +364,16 @@ def store_event(conn, cx: Conn, external_id: str, kind: str, payload) -> int | N
 
 
 def apply_event(conn, event_id: int) -> str:
-    """Apply one stored event. Returns its new status."""
+    """Apply one stored event. Returns its new status. An event is claimed first, so the webhook request
+    and the scheduler can't both apply it."""
+    with conn.tx():
+        claimed = conn.execute("UPDATE inbound_events SET status='working', processed_at=? WHERE id=?"
+                               " AND status='pending'", (iso(now()), event_id)).rowcount
     ev = conn.execute("SELECT * FROM inbound_events WHERE id=?", (event_id,)).fetchone()
     if not ev:
         return "missing"
+    if not claimed:
+        return ev["status"]
     cx = get(conn, ev["connection_id"])
     if not cx or cx["status"] != "active":
         with conn.tx():
@@ -381,8 +387,9 @@ def apply_event(conn, event_id: int) -> str:
         attempts = ev["attempts"] + 1
         status = "failed" if attempts >= MAX_EVENT_ATTEMPTS else "pending"
         with conn.tx():
-            conn.execute("UPDATE inbound_events SET status=?, attempts=?, error=? WHERE id=?",
-                         (status, attempts, str(e)[:500], event_id))
+            conn.execute("UPDATE inbound_events SET status=?, attempts=?, error=?, next_at=?, processed_at=NULL"
+                         " WHERE id=?", (status, attempts, str(e)[:500],
+                                         iso(now() + timedelta(seconds=30 * 2 ** attempts)), event_id))
             conn.execute("UPDATE connections SET last_error=? WHERE id=?", (f"event: {str(e)[:400]}", cx.id))
         log.warning("inbound event %s (%s) failed: %s", event_id, cx.provider, e)
         return status
@@ -393,16 +400,15 @@ def apply_event(conn, event_id: int) -> str:
 
 
 def process_pending(conn, limit: int = 100) -> int:
-    rows = conn.execute("SELECT id, attempts, received_at FROM inbound_events WHERE status='pending'"
-                        " ORDER BY id LIMIT ?", (limit,)).fetchall()
-    n = 0
+    t = iso(now())
+    with conn.tx():  # an event a crashed worker had claimed goes back in the queue
+        conn.execute("UPDATE inbound_events SET status='pending' WHERE status='working' AND processed_at<?",
+                     (iso(now() - timedelta(minutes=15)),))
+    rows = conn.execute("SELECT id FROM inbound_events WHERE status='pending' AND (next_at IS NULL OR next_at<=?)"
+                        " ORDER BY id LIMIT ?", (t, limit)).fetchall()
     for r in rows:
-        # back off: attempt k waits 30s * 2^k after the event arrived
-        due = parse(r["received_at"]) + timedelta(seconds=30 * (2 ** r["attempts"]) if r["attempts"] else 0)
-        if due <= now():
-            apply_event(conn, r["id"])
-            n += 1
-    return n
+        apply_event(conn, r["id"])
+    return len(rows)
 
 
 # ---------------------------------------------------------------------- sync
@@ -498,7 +504,7 @@ def start_scheduler(conn, stop: threading.Event, seconds: float = 30.0) -> None:
                 run_due(conn)
                 if digest_hour.isdigit():
                     t = now()
-                    if t.hour == int(digest_hour) and state["digest_day"] != t.date():
+                    if t.weekday() < 5 and t.hour == int(digest_hour) and state["digest_day"] != t.date():
                         state["digest_day"] = t.date()
                         events.queue_digests(conn)
             except Exception as e:

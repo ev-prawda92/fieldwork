@@ -55,18 +55,28 @@ def _num(v) -> float | None:
         return None
 
 
+def same(a, b) -> bool:
+    """Equal, allowing for REAL columns (4-byte floats on Postgres) not round-tripping exactly."""
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) <= 1e-4 * max(1.0, abs(float(b)))
+    return a == b
+
+
 def upsert(rt, cx, ext: str, deal: dict, actor: str) -> str | None:
     """Create or update one opportunity from a CRM deal. Returns 'created', 'updated' or None. In a transaction."""
     conn = rt.conn
-    ex = conn.execute("SELECT * FROM opportunities WHERE tenant_id=? AND (connection_id=? OR connection_id IS NULL)"
-                      " AND external_id=? ORDER BY connection_id DESC", (rt.tenant_id, cx.id, ext)).fetchone()
+    # Match by the CRM's own id whichever install brought it in, so reconnecting never duplicates deals.
+    ex = conn.execute("SELECT * FROM opportunities WHERE tenant_id=? AND external_id=?"
+                      " ORDER BY CASE WHEN connection_id=? THEN 0 ELSE 1 END", (rt.tenant_id, ext, cx.id)).fetchone()
     vals = {"name": deal["name"][:160] or "Untitled deal", "customer": (deal.get("customer") or "")[:120],
             "value": max(0.0, deal.get("value") or 0.0), "probability": min(1.0, max(0.0, deal.get("probability") or 0.0)),
             "stage": deal["stage"], "expected_start": deal.get("expected_start")}
     if deal.get("weekly_hours") is not None:
         vals["weekly_hours"] = min(400.0, max(0.0, deal["weekly_hours"]))
+    if deal.get("customer") is None:
+        vals.pop("customer")  # unknown this time (not "no customer"): keep what we had
     if ex:
-        changed = {k: v for k, v in vals.items() if ex[k] != v}
+        changed = {k: v for k, v in vals.items() if not same(ex[k], v)}
         if not changed and ex["connection_id"] == cx.id:
             return None
         sets = {**changed, "connection_id": cx.id, "source": cx.provider, "updated_at": audit.now()}
@@ -241,7 +251,7 @@ class HubSpot(CRM):
     key = "hubspot"
     name = "HubSpot"
     authorize_url = "https://app.hubspot.com/oauth/authorize"
-    token_url = f"{HUBSPOT_API}/oauth/v1/token"
+    token_url = f"{HUBSPOT_API}/oauth/v3/token"  # v1 is retired in February 2027
     scopes = ("oauth", "crm.objects.deals.read", "crm.objects.companies.read")
     blurb = "Deals sync into the pipeline, and changes arrive as they happen."
     setup = ("Create a public app in a HubSpot developer account with the callback URL above and the scopes "
@@ -249,8 +259,14 @@ class HubSpot(CRM):
              "subscribe to deal.creation and deal.propertyChange (dealstage, amount, closedate).")
 
     def identify(self, rt, tokens):
-        info = http.call("GET", f"{HUBSPOT_API}/oauth/v1/access-tokens/{tokens['access_token']}", "HubSpot account")
-        return {"external_account_id": str(info.get("hub_id", "")), "account_name": info.get("hub_domain", "HubSpot"),
+        r = http.request("POST", f"{HUBSPOT_API}/oauth/v3/token/introspect", form={
+            "client_id": self.client_id(), "client_secret": self.client_secret(), "token": tokens["access_token"],
+            "token_type_hint": "access_token"})
+        info = r.json() if r.ok else {}
+        hub = str(info.get("hub_id") or tokens.get("hub_id") or "")
+        if not hub:
+            raise core.ConnectError("HubSpot didn't say which account this is; try again")
+        return {"external_account_id": hub, "account_name": info.get("hub_domain") or f"HubSpot {hub}",
                 "extra": {"user": info.get("user")}}
 
     def stages(self, rt, cx) -> dict:
@@ -269,23 +285,23 @@ class HubSpot(CRM):
         return out
 
     def companies(self, rt, cx, deal_ids: list) -> dict:
-        """{deal id: (company name, domain)}"""
-        if not deal_ids:
-            return {}
-        assoc = core.authed(rt.conn, cx, "POST", f"{HUBSPOT_API}/crm/v4/associations/deals/companies/batch/read",
-                            "HubSpot associations", json_body={"inputs": [{"id": i} for i in deal_ids]})
+        """{deal id: (company name, domain)}. Associations go 1000 at a time, company reads 100 (HubSpot's limits)."""
         first = {}
-        for r in assoc.get("results", []):
-            to = r.get("to") or []
-            if to:
-                first[str(r["from"]["id"])] = str(to[0]["toObjectId"])
-        if not first:
-            return {}
-        comp = core.authed(rt.conn, cx, "POST", f"{HUBSPOT_API}/crm/v3/objects/companies/batch/read",
-                           "HubSpot companies", json_body={"inputs": [{"id": c} for c in set(first.values())],
-                                                            "properties": ["name", "domain"]})
-        names = {str(c["id"]): ((c.get("properties") or {}).get("name") or "",
-                                (c.get("properties") or {}).get("domain")) for c in comp.get("results", [])}
+        for i in range(0, len(deal_ids), 1000):
+            assoc = core.authed(rt.conn, cx, "POST", f"{HUBSPOT_API}/crm/v4/associations/deals/companies/batch/read",
+                                "HubSpot associations", json_body={"inputs": [{"id": x} for x in deal_ids[i:i + 1000]]})
+            for r in assoc.get("results", []):
+                to = r.get("to") or []
+                if to:
+                    first[str(r["from"]["id"])] = str(to[0]["toObjectId"])
+        ids, names = sorted(set(first.values())), {}
+        for i in range(0, len(ids), 100):
+            comp = core.authed(rt.conn, cx, "POST", f"{HUBSPOT_API}/crm/v3/objects/companies/batch/read",
+                               "HubSpot companies", json_body={"inputs": [{"id": c} for c in ids[i:i + 100]],
+                                                                "properties": ["name", "domain"]})
+            for c in comp.get("results", []):
+                pr = c.get("properties") or {}
+                names[str(c["id"])] = (pr.get("name") or "", pr.get("domain"))
         return {d: names.get(c, ("", None)) for d, c in first.items()}
 
     def sync(self, rt, cx, full=False):
@@ -309,7 +325,7 @@ class HubSpot(CRM):
             after = ((res.get("paging") or {}).get("next") or {}).get("after")
             if not after:
                 break
-        comp = self.companies(rt, cx, [str(r["id"]) for r in results][:1000])
+        comp = self.companies(rt, cx, [str(r["id"]) for r in results])
         deals = []
         for r in results:
             p = r.get("properties") or {}
@@ -318,7 +334,7 @@ class HubSpot(CRM):
             prob = prob if prob is not None else st.get("probability")
             won = str(p.get("hs_is_closed_won", "")).lower() == "true"
             closed = str(p.get("hs_is_closed", "")).lower() == "true" or st.get("closed", False)
-            name, domain = comp.get(str(r["id"]), ("", None))
+            name, domain = comp.get(str(r["id"]), ("", None))  # a deal with no company has no customer
             deals.append((str(r["id"]), {
                 "name": p.get("dealname") or "", "customer": name, "value": _num(p.get("amount")) or 0.0,
                 "probability": 1.0 if won else (prob or 0.0), "expected_start": (p.get("closedate") or "")[:10] or None,
@@ -392,8 +408,20 @@ def open_deployment(conn, user, oid: str) -> tuple[bool, dict | str]:
     o = conn.execute("SELECT * FROM opportunities WHERE id=? AND tenant_id=?", (oid, user["tenant_id"])).fetchone()
     if not o:
         return False, "opportunity not found"
-    if o["deployment_id"]:
+    claim = "opening:" + secrets.token_hex(4)
+    with db.tx(conn):  # claim it first, so a double click or a race with auto-open can't open two
+        got = conn.execute("UPDATE opportunities SET deployment_id=? WHERE id=? AND deployment_id IS NULL",
+                           (claim, oid)).rowcount
+    if not got:
         return False, "this deal already has a deployment"
+    try:
+        return _open(conn, user, o, oid)
+    finally:
+        with db.tx(conn):  # if opening failed part-way, let it be tried again
+            conn.execute("UPDATE opportunities SET deployment_id=NULL WHERE id=? AND deployment_id=?", (oid, claim))
+
+
+def _open(conn, user, o, oid: str):
     cust_name = o["customer"] or o["name"]
     cust = conn.execute("SELECT id FROM customers WHERE tenant_id=? AND lower(name)=?",
                         (user["tenant_id"], cust_name.lower())).fetchone()

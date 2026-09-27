@@ -20,15 +20,17 @@ App setup (once per install of Fieldwork):
 """
 
 
+import asyncio
 import hashlib
 import hmac
 import json
 import os
+import threading
 import time
 from urllib.parse import parse_qs
 
 from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from .. import events
 from . import actas, core, http
@@ -36,6 +38,11 @@ from .core import Provider
 
 API = "https://slack.com/api"
 OWNER_KEYS = ("customer", "team", "model_vendor", "software_vendor")
+
+
+def run_later(fn, *args) -> None:
+    """Work Slack shouldn't wait for. Tests replace this to run inline."""
+    threading.Thread(target=fn, args=args, daemon=True).start()
 
 
 def _ok(r: dict, what: str) -> dict:
@@ -99,6 +106,10 @@ class Slack(Provider):
 
     def identify(self, rt, tokens):
         team, hook = tokens.get("team") or {}, tokens.get("webhook") or {}
+        other = rt.conn.execute("SELECT 1 FROM connections WHERE provider='slack' AND status='active'"
+                                " AND external_account_id=? AND tenant_id!=?", (team.get("id", ""), rt.tenant_id)).fetchone()
+        if other:  # buttons and commands are routed by Slack workspace, so it belongs to one of ours
+            raise core.ConnectError("That Slack workspace is already connected to another Fieldwork workspace")
         return {"external_account_id": team.get("id", ""), "account_name": team.get("name", "Slack"),
                 "extra": {"channel": hook.get("channel", ""), "channel_id": hook.get("channel_id", ""),
                           "bot_user_id": tokens.get("bot_user_id"), "app_id": tokens.get("app_id")}}
@@ -108,8 +119,11 @@ class Slack(Provider):
             if not cx.settings.get("channel_id") and cx.extra.get("channel_id"):
                 core.save(rt.conn, cx, settings={**cx.settings, "channel_id": cx.extra["channel_id"]})
 
-            def on(cfg):
-                cfg["integrations"]["slack"]["enabled"] = True
+            def on(cfg):  # the events that come with a decision button are the point of the app
+                sl = cfg["integrations"]["slack"]
+                sl["enabled"] = True
+                sl["events"] = list(dict.fromkeys(sl.get("events", []) + ["delay.opened", "flag.raised",
+                                                                           "approval.requested", "task.blocked"]))
             core.update_config(rt.conn, rt.tenant_id, cx["created_by"], on)
 
     def before_disconnect(self, rt, cx):
@@ -150,36 +164,44 @@ class Slack(Provider):
                     return {"ok": True, "via": "incoming_webhook"}
             raise
 
+    MAP_TTL = 3600  # re-check who a Slack user is at least hourly
+
     def slack_user_for(self, conn, cx, email: str) -> str | None:
+        """Slack user id for an email. Only hits are cached (for an hour); a miss is asked again next time."""
         cache = cx.extra.get("_by_email", {})
-        if email.lower() in cache:
-            return cache[email.lower()]
+        hit = cache.get(email.lower())
+        if isinstance(hit, list) and hit[1] > time.time() - self.MAP_TTL:
+            return hit[0]
         try:
             u = self.get(conn, cx, "users.lookupByEmail", email=email)["user"]["id"]
         except http.HTTPError:
-            u = None
+            return None
         with conn.tx():
-            core.save(conn, cx, extra={**cx.extra, "_by_email": {**cache, email.lower(): u}})
+            core.save(conn, cx, extra={**cx.extra, "_by_email": {**cache, email.lower(): [u, time.time()]}})
         return u
 
     def person_for(self, conn, cx, slack_user: str):
-        """The Fieldwork person behind a Slack user, matched by their Slack email."""
+        """The Fieldwork person behind a Slack user, matched by their confirmed Slack email.
+        A match is trusted for an hour and only while the person's email here is still that email."""
         known = cx.extra.get("_people", {})
-        if slack_user in known:
-            u = conn.execute("SELECT * FROM users WHERE id=? AND tenant_id=?", (known[slack_user], cx.tenant_id)).fetchone()
-            if u:
+        hit = known.get(slack_user)
+        if isinstance(hit, list) and hit[2] > time.time() - self.MAP_TTL:
+            u = conn.execute("SELECT * FROM users WHERE id=? AND tenant_id=?", (hit[0], cx.tenant_id)).fetchone()
+            if u and u["email"].lower() == hit[1]:
                 return u
         try:
-            prof = self.get(conn, cx, "users.info", user=slack_user)["user"].get("profile", {})
+            user = self.get(conn, cx, "users.info", user=slack_user)["user"]
         except http.HTTPError:
             return None
-        email = (prof.get("email") or "").lower()
+        if user.get("deleted") or user.get("is_email_confirmed") is False:
+            return None
+        email = ((user.get("profile") or {}).get("email") or "").lower()
         if not email:
             return None
         u = conn.execute("SELECT * FROM users WHERE tenant_id=? AND lower(email)=?", (cx.tenant_id, email)).fetchone()
         if u:
             with conn.tx():
-                core.save(conn, cx, extra={**cx.extra, "_people": {**known, slack_user: u["id"]}})
+                core.save(conn, cx, extra={**cx.extra, "_people": {**known, slack_user: [u["id"], email, time.time()]}})
         return u
 
     # ----------------------------------------------------- inbound (Slack)
@@ -214,31 +236,42 @@ class Slack(Provider):
             p = json.loads(body or b"{}")
             if p.get("type") == "url_verification":
                 return {"challenge": p.get("challenge", "")}
-            ev = p.get("event") or {}
-            for cx in prov.connections_for_team(conn, p.get("team_id", "")):
-                eid = core.store_event(conn, cx, p.get("event_id", ""), ev.get("type", ""), p)
-                if eid:
-                    core.apply_event(conn, eid)
-            return {"ok": True}
+            return await asyncio.to_thread(prov.on_event, conn, p)
 
         @app.post("/hooks/slack/interact", include_in_schema=False)
         async def slack_interact(request: Request):
             _, body = await read(request)
             payload = json.loads(parse_qs(body.decode()).get("payload", ["{}"])[0])
-            if payload.get("type") != "block_actions" or not payload.get("actions"):
-                return {"ok": True}
-            import asyncio
-            await asyncio.to_thread(prov.on_action, conn, payload)
+            if payload.get("type") == "block_actions" and payload.get("actions"):
+                run_later(prov.on_action, conn, payload)  # Slack wants an answer within 3 seconds
             return JSONResponse({}, status_code=200)
 
         @app.post("/hooks/slack/command", include_in_schema=False)
         async def slack_command(request: Request):
             _, body = await read(request)
             f = {k: v[0] for k, v in parse_qs(body.decode()).items()}
-            import asyncio
-            return await asyncio.to_thread(prov.on_command, conn, f)
+            run_later(prov.answer_command, conn, f)  # an empty 200 now, the answer via response_url
+            return Response(status_code=200)
+
+    def on_event(self, conn, p: dict) -> dict:
+        ev = p.get("event") or {}
+        for cx in self.connections_for_team(conn, p.get("team_id", "")):
+            eid = core.store_event(conn, cx, p.get("event_id", ""), ev.get("type", ""), p)
+            if eid:
+                core.apply_event(conn, eid)
+        return {"ok": True}
+
+    def answer_command(self, conn, f: dict) -> None:
+        reply = self.on_command(conn, f)
+        if f.get("response_url"):
+            try:
+                http.request("POST", f["response_url"], json_body=reply, timeout=5)
+            except Exception:
+                pass
 
     def handle(self, rt, cx, kind, payload):
+        if kind == "tokens_revoked" and not ((payload.get("event") or {}).get("tokens") or {}).get("bot"):
+            return  # a person revoked their own user token; the install still works
         if kind in ("app_uninstalled", "tokens_revoked"):
             with rt.conn.tx():
                 core.save(rt.conn, cx, status="disconnected", tokens=None,

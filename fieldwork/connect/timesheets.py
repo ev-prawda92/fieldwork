@@ -29,8 +29,9 @@ class TimeSource(Provider):
          "help": "Project id → deployment id; unmapped projects match a deployment with the same name"},
     )
 
-    def fetch(self, rt, cx, since_day: str, updated_since: str | None) -> tuple[list, dict]:
-        """-> (entries, projects {id: {"name", "client"}}); entry: {ext, email, project_id, day, hours}"""
+    def fetch(self, rt, cx, since_day: str, updated_since: str | None) -> tuple[list, dict, bool]:
+        """-> (entries, projects {id: {"name", "client"}}, complete); entry: {ext, email, project_id, day, hours}.
+        complete is False when paging stopped early, so a reconcile knows not to delete what it didn't see."""
         raise NotImplementedError
 
     def deployment_for(self, rt, cx, projects: dict, deps: list, pid) -> str | None:
@@ -65,7 +66,7 @@ class TimeSource(Provider):
         today = core.now().date()
         since_day = (today - timedelta(days=WINDOW_DAYS if full else 14)).isoformat()
         updated_since = None if full else cx.cursor.get("updated_since")
-        entries, projects = self.fetch(rt, cx, since_day, updated_since)
+        entries, projects, complete = self.fetch(rt, cx, since_day, updated_since)
         people = rt.users_by_email()
         deps = self._deps(rt)
         n = {"created": 0, "updated": 0, "removed": 0, "unmatched_people": 0}
@@ -82,12 +83,16 @@ class TimeSource(Provider):
                 hours = round(max(0.0, min(24.0, float(e["hours"]))), 2)
                 seen.add(str(e["ext"]))
                 dep = self.deployment_for(rt, cx, projects, deps, e.get("project_id"))
-                ex = rt.conn.execute("SELECT id, hours, day, deployment_id, user_id FROM time_entries"
-                                     " WHERE connection_id=? AND external_id=?", (cx.id, str(e["ext"]))).fetchone()
+                # by the source's own id, whichever install brought it in: reconnecting never doubles hours
+                ex = rt.conn.execute("SELECT id, hours, day, deployment_id, user_id, connection_id FROM time_entries"
+                                     " WHERE tenant_id=? AND source=? AND external_id=?"
+                                     " ORDER BY CASE WHEN connection_id=? THEN 0 ELSE 1 END",
+                                     (rt.tenant_id, self.key, str(e["ext"]), cx.id)).fetchone()
                 if ex:
-                    if (ex["hours"], ex["day"], ex["deployment_id"], ex["user_id"]) != (hours, e["day"], dep, u["id"]):
-                        rt.conn.execute("UPDATE time_entries SET hours=?, day=?, deployment_id=?, user_id=? WHERE id=?",
-                                        (hours, e["day"], dep, u["id"], ex["id"]))
+                    if abs((ex["hours"] or 0) - hours) > 0.005 or (ex["day"], ex["deployment_id"], ex["user_id"],
+                                                                   ex["connection_id"]) != (e["day"], dep, u["id"], cx.id):
+                        rt.conn.execute("UPDATE time_entries SET hours=?, day=?, deployment_id=?, user_id=?,"
+                                        " connection_id=? WHERE id=?", (hours, e["day"], dep, u["id"], cx.id, ex["id"]))
                         n["updated"] += 1
                 elif hours > 0:
                     rt.conn.execute("INSERT INTO time_entries (tenant_id, user_id, deployment_id, day, hours, source,"
@@ -95,7 +100,7 @@ class TimeSource(Provider):
                                     (rt.tenant_id, u["id"], dep, e["day"], hours, self.key, audit.now(),
                                      str(e["ext"]), cx.id))
                     n["created"] += 1
-            if full:  # anything in the window the source no longer has was deleted there
+            if full and complete:  # anything in the window the source no longer has was deleted there
                 stale = [r["id"] for r in rt.conn.execute(
                     "SELECT id, external_id FROM time_entries WHERE connection_id=? AND day>=?", (cx.id, since_day))
                     if r["external_id"] not in seen]
@@ -135,29 +140,30 @@ class Harvest(TimeSource):
         return {"external_account_id": str(acct["id"]), "account_name": acct.get("name", "Harvest"),
                 "extra": {"account_id": acct["id"]}}
 
-    def _get(self, rt, cx, path, params) -> list:
-        """Every page of a Harvest list endpoint."""
+    def _get(self, rt, cx, path, params) -> tuple[list, bool]:
+        """Every page of a Harvest list endpoint -> (rows, reached the last page)."""
         key = path.strip("/").split("/")[0]
         out, page = [], 1
-        while page and page <= 50:
+        while page and page <= 100:
             r = core.authed(rt.conn, cx, "GET", f"{HARVEST_API}{path}", f"Harvest {key}",
                             params={**params, "page": page, "per_page": 2000},
                             headers={"Harvest-Account-Id": str(cx.extra["account_id"])})
             out += r.get(key, [])
             page = r.get("next_page")
-        return out
+        return out, not page
 
     def fetch(self, rt, cx, since_day, updated_since):
-        users = {u["id"]: u.get("email") for u in self._get(rt, cx, "/users", {})}
+        users = {u["id"]: u.get("email") for u in self._get(rt, cx, "/users", {})[0]}
         projects = {str(p["id"]): {"name": p.get("name"), "client": (p.get("client") or {}).get("name")}
-                    for p in self._get(rt, cx, "/projects", {})}
+                    for p in self._get(rt, cx, "/projects", {})[0]}
         params = {"from": since_day}
         if updated_since:
             params["updated_since"] = updated_since
+        rows, complete = self._get(rt, cx, "/time_entries", params)
         entries = [{"ext": e["id"], "email": users.get((e.get("user") or {}).get("id")),
                     "project_id": (e.get("project") or {}).get("id"), "day": e.get("spent_date"),
-                    "hours": e.get("hours")} for e in self._get(rt, cx, "/time_entries", params)]
-        return entries, projects
+                    "hours": e.get("hours")} for e in rows]
+        return entries, projects, complete
 
 
 # ====================================================================== Toggl
@@ -198,12 +204,16 @@ class Toggl(TimeSource):
         h, wid = self._h(tok["api_token"]), tok["workspace_id"]
         users = {u["id"]: u.get("email") for u in
                  http.call("GET", f"{TOGGL}/api/v9/workspaces/{wid}/users", "Toggl people", headers=h)}
-        projects = {str(p["id"]): {"name": p.get("name"), "client": p.get("client_name")} for p in
-                    http.call("GET", f"{TOGGL}/api/v9/workspaces/{wid}/projects", "Toggl projects", headers=h,
-                              params={"active": "both", "per_page": 200}) or []}
-        body = {"start_date": since_day, "end_date": core.now().date().isoformat(), "page_size": 1000}
-        entries = []
-        for _ in range(50):
+        projects = {}
+        for page in range(1, 51):
+            batch = http.call("GET", f"{TOGGL}/api/v9/workspaces/{wid}/projects", "Toggl projects", headers=h,
+                              params={"active": "both", "per_page": 200, "page": page}) or []
+            projects.update({str(p["id"]): {"name": p.get("name"), "client": p.get("client_name")} for p in batch})
+            if len(batch) < 200:
+                break
+        body = {"start_date": since_day, "end_date": core.now().date().isoformat(), "page_size": 50}
+        entries, complete = [], False
+        for _ in range(400):
             r = http.request("POST", f"{TOGGL}/reports/api/v3/workspace/{wid}/search/time_entries", headers=h,
                              json_body=body)
             if not r.ok:
@@ -215,11 +225,15 @@ class Toggl(TimeSource):
                     entries.append({"ext": te["id"], "email": users.get(row.get("user_id")),
                                     "project_id": row.get("project_id"), "day": (te.get("start") or "")[:10],
                                     "hours": round(te.get("seconds", 0) / 3600, 2)})
-            nxt_id, nxt_row = r.headers.get("x-next-id"), r.headers.get("x-next-row-number")
+            nxt_id, nxt_row, nxt_ts = (r.headers.get("x-next-id"), r.headers.get("x-next-row-number"),
+                                       r.headers.get("x-next-timestamp"))
             if not nxt_id:
+                complete = True
                 break
             body = {**body, "first_id": int(nxt_id), "first_row_number": int(nxt_row or 0)}
-        return entries, projects
+            if nxt_ts:
+                body["first_timestamp"] = int(nxt_ts)
+        return entries, projects, complete
 
 
 HARVEST = core.register(Harvest())

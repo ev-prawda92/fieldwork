@@ -82,6 +82,8 @@ class GitHub:
     def __init__(self, conn, tenant_id, cfg):
         self.api = cfg["integrations"]["github"]["api_base"]
         self.cx = _connection(conn, tenant_id, "github")
+        if self.cx:  # an install's token only ever goes to the host it was issued for
+            self.api = self.cx.extra.get("api_base") or "https://api.github.com"
         self.token = _token(conn, self.cx) if self.cx else _need(events.secret(conn, tenant_id, "github_token"),
                                                                  "GitHub token")
 
@@ -99,12 +101,14 @@ class GitHub:
         code, r = events.http_json(f"{self.api}/repos/{target}/issues", body, self._h())
         if code >= 300:
             raise TrackerError(f"GitHub create failed ({code}): {r}")
+        ext = f"{target}#{r['number']}"  # issue numbers repeat across repos; the repo is part of the id
         if task["status"] == "done":
-            self.update(target, str(r["number"]), task)
-        return str(r["number"]), r.get("html_url", "")
+            self.update(target, ext, task)
+        return ext, r.get("html_url", "")
 
     def update(self, target: str, ext: str, task: dict) -> None:
-        code, r = events.http_json(f"{self.api}/repos/{target}/issues/{ext}", {
+        num = ext.rsplit("#", 1)[-1]
+        code, r = events.http_json(f"{self.api}/repos/{target}/issues/{num}", {
             "title": task["title"], "state": "closed" if task["status"] == "done" else "open",
             "labels": self._labels(task["status"])}, self._h(), method="PATCH")
         if code >= 300:
@@ -132,7 +136,8 @@ class GitHub:
         ch = {"status": status, "title": iss.get("title")}
         if iss.get("assignee"):
             ch["assignee"] = {"login": iss["assignee"].get("login"), "id": str(iss["assignee"].get("id", ""))}
-        return [(str(iss["number"]), ch)]
+        repo = (payload.get("repository") or {}).get("full_name")
+        return [(f"{repo}#{iss['number']}" if repo else str(iss["number"]), ch)]
 
 
 # ------------------------------------------------------------------ Linear
@@ -146,6 +151,8 @@ class Linear:
     def __init__(self, conn, tenant_id, cfg):
         self.api = cfg["integrations"]["linear"]["api_base"] + "/graphql"
         self.cx = _connection(conn, tenant_id, "linear")
+        if self.cx:
+            self.api = (self.cx.extra.get("api_base") or "https://api.linear.app") + "/graphql"
         self.key = ("Bearer " + _token(conn, self.cx)) if self.cx else _need(
             events.secret(conn, tenant_id, "linear_api_key"), "Linear API key")
 
@@ -156,7 +163,7 @@ class Linear:
         return r["data"]
 
     def _state(self, team: str, status: str) -> str | None:
-        d = self._q("query($t:ID!){ team(id:$t){ states{ nodes{ id type position } } } }", {"t": team})
+        d = self._q("query($t:String!){ team(id:$t){ states{ nodes{ id type position } } } }", {"t": team})
         want = LINEAR_TYPES[status]
         states = sorted((n for n in d["team"]["states"]["nodes"] if n["type"] == want), key=lambda n: n["position"])
         return states[0]["id"] if states else None
@@ -341,6 +348,14 @@ def apply_inbound(conn, tenant_id: str, provider: str, changes: list[tuple[str, 
     for ext, ch in changes:
         link = conn.execute("SELECT * FROM task_links WHERE tenant_id=? AND provider=? AND external_id=?",
                             (tenant_id, provider, ext)).fetchone()
+        if not link and provider == "github" and "#" in ext:
+            repo, num = ext.rsplit("#", 1)
+            for cand in conn.execute("SELECT l.*, d.sync_json FROM task_links l JOIN tasks t ON t.id=l.task_id"
+                                     " JOIN deployments d ON d.id=t.deployment_id WHERE l.tenant_id=?"
+                                     " AND l.provider='github' AND l.external_id=?", (tenant_id, num)).fetchall():
+                if json.loads(cand["sync_json"] or "{}").get("target") == repo:
+                    link = cand
+                    break
         if not link:
             continue
         task = conn.execute("SELECT * FROM tasks WHERE id=?", (link["task_id"],)).fetchone()
@@ -383,10 +398,18 @@ def apply_inbound(conn, tenant_id: str, provider: str, changes: list[tuple[str, 
 
 
 def _can_hold(conn, cfg: dict, task, uid: str) -> bool:
-    """Only move a task to someone who can see it: internal tasks stay with people who see internal work."""
+    """Only move a task to someone who can see it, by the console's rule: internal tasks go to people who see
+    internal work on this deployment (everywhere, or here because they're staffed on it)."""
     u = conn.execute("SELECT role FROM users WHERE id=? AND tenant_id=?", (uid, task["tenant_id"])).fetchone()
     if not u:
         return False
+    if not conn.execute("SELECT 1 FROM deployment_members WHERE deployment_id=? AND user_id=?",
+                        (task["deployment_id"], uid)).fetchone() and \
+            cfg["permissions"].get("deployment.view", {}).get(u["role"]) != "all":
+        return False  # they couldn't even see the deployment
     if task["visibility"] == "shared":
         return True
-    return cfg["permissions"].get("task.view_internal", {}).get(u["role"]) is not None
+    s = cfg["permissions"].get("task.view_internal", {}).get(u["role"])
+    return s == "all" or (s == "own" and conn.execute(
+        "SELECT 1 FROM deployment_members WHERE deployment_id=? AND user_id=?", (task["deployment_id"], uid)).fetchone()
+        is not None)

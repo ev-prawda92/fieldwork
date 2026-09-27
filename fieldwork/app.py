@@ -127,7 +127,7 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
     """background=True (used by `serve`) starts the outbox worker and, in demo mode, the demo reset."""
     conn = db.connect(db_url)
     db.init(conn)
-    app = FastAPI(title="Fieldwork", version="0.6.0",
+    app = FastAPI(title="Fieldwork", version="0.7.0",
                   description="The platform deployment teams build their methodology on")
     app.state.conn = conn
 

@@ -63,8 +63,10 @@ class FakeWeb:
 
 @pytest.fixture()
 def web(monkeypatch):
+    from fieldwork.connect import slack as slack_app
     w = FakeWeb()
     monkeypatch.setattr(http, "transport", w)
+    monkeypatch.setattr(slack_app, "run_later", lambda fn, *a: fn(*a))  # Slack's deferred work, inline
     return w
 
 
@@ -142,7 +144,7 @@ def slack_fakes(web, team="T1"):
     web.route("GET", r"slack\.com/api/users\.lookupByEmail", lambda r: (
         (200, {"ok": True, "user": {"id": by_email[r["query"]["email"]]}}) if r["query"]["email"] in by_email
         else (200, {"ok": False, "error": "users_not_found"})))
-    web.json("POST", r"hooks\.slack\.com/actions", {"ok": True})
+    web.json("POST", r"hooks\.slack\.com/(actions|commands)", {"ok": True})
 
 
 def test_oauth_callback_creates_encrypted_connection(client, web):
@@ -295,18 +297,21 @@ def test_slack_events_verification_and_uninstall(client, web):
     assert n == 1
 
 
+def command(client, web, user, text):
+    body = urlencode({"team_id": "T1", "user_id": user, "text": text, "command": "/fieldwork",
+                      "response_url": "https://hooks.slack.com/commands/T1/1/x"}).encode()
+    r = client.post("/hooks/slack/command", content=body, headers=slack_sign(body))
+    assert r.status_code == 200 and not r.content  # acknowledged at once; the answer follows
+    return web.called("POST", "hooks.slack.com/commands")[-1]["json"]
+
+
 def test_slash_command_today_and_status(client, web):
     slack_fakes(web)
     install(client, "slack")
-    body = urlencode({"team_id": "T1", "user_id": "USAM", "text": "today", "command": "/fieldwork"}).encode()
-    r = client.post("/hooks/slack/command", content=body, headers=slack_sign(body)).json()
+    r = command(client, web, "USAM", "today")
     assert r["response_type"] == "ephemeral" and "Confirm 3-way-match" in r["text"]
-    body = urlencode({"team_id": "T1", "user_id": "UDANA", "text": "status castellan"}).encode()
-    r = client.post("/hooks/slack/command", content=body, headers=slack_sign(body)).json()
-    assert "Claims triage copilot" in r["text"]
-    body = urlencode({"team_id": "T1", "user_id": "URUTH", "text": "status castellan"}).encode()
-    r = client.post("/hooks/slack/command", content=body, headers=slack_sign(body)).json()
-    assert "No deployment you can see" in r["text"]
+    assert "Claims triage copilot" in command(client, web, "UDANA", "status castellan")["text"]
+    assert "No deployment you can see" in command(client, web, "URUTH", "status castellan")["text"]
 
 
 def test_assignment_sends_a_direct_message(client, web):
@@ -374,8 +379,10 @@ def test_github_install_links_repo_and_syncs_both_ways(client, web):
     # closed in GitHub by someone mapped in the connection's people setting
     client.patch(f"/api/connections/{cx.id}/settings", headers=H("head"),
                  json={"settings": {"people": {"maya-gh": "maya@meridian.example"}}})
-    payload = {"action": "closed", "issue": {"number": int(link["external_id"]), "state": "closed", "title": "t",
-                                             "labels": [], "assignee": {"login": "maya-gh", "id": 3}}}
+    assert link["external_id"].startswith("acme/ap#")
+    payload = {"action": "closed", "repository": {"full_name": "acme/ap"},
+               "issue": {"number": int(link["external_id"].split("#")[1]), "state": "closed", "title": "t",
+                         "labels": [], "assignee": {"login": "maya-gh", "id": 3}}}
     r = gh_hook(client, cx, payload)
     assert r.status_code == 200 and r.json()["results"] == ["done"]
     t = client.conn.execute("SELECT status, assignee_id FROM tasks WHERE id=?", (link["task_id"],)).fetchone()
@@ -458,7 +465,7 @@ def test_jira_3lo_dynamic_webhook_renewal_and_signed_delivery(client, web):
     assert cx.extra["cloud_id"] == "cloud-1"
     client.put("/api/deployments/dep_castellan/sync", headers=H("head"), json={"provider": "jira", "target": "AP"})
     reg = web.called("POST", "rest/api/3/webhook$")[0]["json"]
-    assert reg["webhooks"][0]["jqlFilter"] == 'project = "AP"'
+    assert reg["webhooks"][0]["jqlFilter"] == 'project in ("AP")'
     events.process(client.conn)
     link = client.conn.execute("SELECT * FROM task_links WHERE provider='jira' LIMIT 1").fetchone()
     assert link["url"].startswith("https://meridian.atlassian.net/browse/")
@@ -564,9 +571,9 @@ def hubspot_sign(method, uri, body, secret="hubspot-secret", ts=None):
 
 
 def test_hubspot_signed_nudge_then_sync(client, web):
-    web.json("POST", r"api\.hubapi\.com/oauth/v1/token", {"access_token": "hs1", "refresh_token": "hsr",
-                                                          "expires_in": 1800})
-    web.json("GET", r"api\.hubapi\.com/oauth/v1/access-tokens/hs1", {"hub_id": 4242, "hub_domain": "meridian.com"})
+    web.json("POST", r"api\.hubapi\.com/oauth/v3/token$", {"access_token": "hs1", "refresh_token": "hsr",
+                                                           "expires_in": 1800, "hub_id": 4242})
+    web.json("POST", r"api\.hubapi\.com/oauth/v3/token/introspect", {"hub_id": 4242, "hub_domain": "meridian.com"})
     web.json("GET", r"crm/v3/pipelines/deals", {"results": [{"stages": [
         {"id": "appt", "label": "Appointment scheduled", "metadata": {"probability": "0.2", "isClosed": "false"}},
         {"id": "won", "label": "Closed won", "metadata": {"probability": "1.0", "isClosed": "true"}}]}]})
@@ -785,6 +792,8 @@ def test_time_off_by_hand(client):
 # ===================================================================== email
 
 def test_gmail_metadata_becomes_last_contact_and_a_quiet_flag(client, web):
+    with client.conn.tx():  # start from no signal (the demo seeds some)
+        client.conn.execute("DELETE FROM contact_signals WHERE connection_id='seed'")
     web.json("POST", r"oauth2\.googleapis\.com/token", {"access_token": "g1", "refresh_token": "gr", "expires_in": 3600})
     web.json("GET", r"openidconnect\.googleapis\.com/v1/userinfo", {"sub": "g-marcus", "email": "marcus@meridian.example"})
     web.json("GET", r"gmail/v1/users/me/profile", {"historyId": "100"})
@@ -845,7 +854,7 @@ def test_failed_event_stays_pending_and_can_be_replayed(client, web, monkeypatch
             raise RuntimeError("database hiccup")
         return real(self, rt, cx_, kind, payload)
     monkeypatch.setattr(live.GitHubApp, "handle", flaky)
-    payload = {"issue": {"number": 1, "state": "open", "title": "x", "labels": []}}
+    payload = {"repository": {"full_name": "acme/ap"}, "issue": {"number": 1, "state": "open", "title": "x", "labels": []}}
     assert gh_hook(client, cx, payload, delivery="d-9").json()["results"] == ["pending"]
     detail = client.get(f"/api/connections/{cx.id}", headers=H("head")).json()
     assert detail["health"]["events"]["pending"] == 1 and "database hiccup" in detail["health"]["last_error"]
@@ -900,7 +909,7 @@ def test_stream_says_when_something_changed(client):
     got = queue.Queue()
 
     def listen():
-        with httpx.stream("GET", f"{base}/api/stream?max_events=1&poll=0.05", headers=H("head"), timeout=10) as r:
+        with httpx.stream("GET", f"{base}/api/stream?max_events=1&poll=0.25", headers=H("head"), timeout=10) as r:
             for line in r.iter_lines():
                 if line.startswith("event:"):
                     got.put(line)
@@ -924,3 +933,165 @@ def test_other_workspaces_never_see_connections(client, web):
     other = {"Authorization": "Bearer demo-head-orbital"}
     assert client.get(f"/api/connections/{cx.id}", headers=other).status_code == 404
     assert all(not p["connections"] for p in client.get("/api/connections", headers=other).json()["providers"])
+
+
+def test_webhooks_get_past_the_access_gate(db_url, monkeypatch, web):
+    from fastapi.testclient import TestClient
+
+    from fieldwork.app import create_app
+    from fieldwork.seed import seed
+    monkeypatch.setenv("FIELDWORK_ACCESS_PASSWORD", "letmein")
+    seed(db_url)
+    c = TestClient(create_app(db_url))
+    body = json.dumps({"type": "url_verification", "challenge": "ok"}).encode()
+    assert c.post("/hooks/slack/events", content=body, headers=slack_sign(body)).json() == {"challenge": "ok"}
+    assert c.get("/", follow_redirects=False).status_code == 302  # people still meet the gate
+
+
+# ======================================================= review regressions
+
+def test_same_issue_number_in_another_repo_touches_nothing(client, web):
+    github_fakes(web)
+    install(client, "github")
+    client.put("/api/deployments/dep_northfield/sync", headers=H("head"), json={"provider": "github", "target": "acme/ap"})
+    events.process(client.conn)
+    cx = the_cx(client, "github")
+    link = client.conn.execute("SELECT * FROM task_links WHERE provider='github' LIMIT 1").fetchone()
+    num = int(link["external_id"].split("#")[1])
+    before = dict(client.conn.execute("SELECT status, title FROM tasks WHERE id=?", (link["task_id"],)).fetchone())
+    gh_hook(client, cx, {"repository": {"full_name": "acme/other"},
+                         "issue": {"number": num, "state": "closed", "title": "someone else's", "labels": []}},
+            delivery="d-other")
+    after = dict(client.conn.execute("SELECT status, title FROM tasks WHERE id=?", (link["task_id"],)).fetchone())
+    assert after == before
+
+
+def test_linking_a_new_repo_is_an_admin_call(client, web):
+    github_fakes(web)
+    install(client, "github")
+    r = client.put("/api/deployments/dep_northfield/sync", headers=H("em"), json={"provider": "github", "target": "acme/secret"})
+    assert r.status_code == 403 and not web.called("POST", "acme/secret/hooks")
+    client.put("/api/deployments/dep_northfield/sync", headers=H("head"), json={"provider": "github", "target": "acme/ap"})
+    assert client.put("/api/deployments/dep_harborview/sync", headers=H("em"),
+                      json={"provider": "github", "target": "acme/ap"}).status_code == 200
+
+
+def test_the_install_token_only_goes_to_its_own_host(client, web):
+    github_fakes(web)
+    install(client, "github")
+    c = client.get("/api/config", headers=H("head")).json()["config"]
+    c["integrations"]["github"]["api_base"] = "https://evil.example"
+    client.put("/api/config", headers=H("head"), json=c)
+    client.put("/api/deployments/dep_northfield/sync", headers=H("head"), json={"provider": "github", "target": "acme/ap"})
+    events.process(client.conn)
+    assert not [x for x in web.calls if "evil.example" in x["url"]]
+    assert web.called("POST", r"api\.github\.com/repos/acme/ap/issues$")
+
+
+def test_an_event_is_applied_once(client, web):
+    github_fakes(web)
+    install(client, "github")
+    cx = the_cx(client, "github")
+    eid = core.store_event(client.conn, cx, "dup-1", "ping", {})
+    assert core.apply_event(client.conn, eid) == "done"
+    assert core.apply_event(client.conn, eid) == "done"
+    assert client.conn.execute("SELECT attempts FROM inbound_events WHERE id=?", (eid,)).fetchone()["attempts"] == 1
+
+
+def test_reconnecting_harvest_does_not_double_hours(client, web):
+    web.json("POST", r"id\.getharvest\.com/api/v2/oauth2/token", {"access_token": "hv1", "expires_in": 1209600})
+    web.json("GET", r"id\.getharvest\.com/api/v2/accounts", {"accounts": [{"id": 99, "name": "M", "product": "harvest"}]})
+    web.json("GET", r"v2/users", {"users": [{"id": 1, "email": "maya@meridian.example"}], "next_page": None})
+    web.json("GET", r"v2/projects", {"projects": [], "next_page": None})
+    web.json("GET", r"v2/time_entries", {"time_entries": [{"id": 7, "user": {"id": 1}, "project": {"id": 1},
+                                                           "spent_date": date.today().isoformat(), "hours": 3.5}],
+                                         "next_page": None})
+    install(client, "harvest")
+    cx = the_cx(client, "harvest")
+    client.post(f"/api/connections/{cx.id}/sync", headers=H("head"), json={})
+    client.delete(f"/api/connections/{cx.id}", headers=H("head"))
+    install(client, "harvest", code="code-2")
+    cx2 = the_cx(client, "harvest")
+    client.post(f"/api/connections/{cx2.id}/sync", headers=H("head"), json={})
+    rows = client.conn.execute("SELECT * FROM time_entries WHERE source='harvest'").fetchall()
+    assert len(rows) == 1 and rows[0]["connection_id"] == cx2.id and rows[0]["hours"] == 3.5
+
+
+def test_a_one_day_google_ooo_is_one_day(client, web):
+    mon = next_monday()
+    google_fakes(web, [{"id": "d1", "status": "confirmed", "eventType": "outOfOffice", "summary": "OOO",
+                        "start": {"dateTime": f"{mon}T00:00:00-04:00"},
+                        "end": {"dateTime": f"{mon + timedelta(days=1)}T00:00:00-04:00"}}])
+    install(client, "google_calendar", who="fde")
+    assert client.get(f"/api/me/week?week={mon}", headers=H("fde")).json()["off_days"] == [str(mon)]
+
+
+def test_disconnecting_a_calendar_forgets_time_off_even_if_google_is_gone(client, web):
+    mon = next_monday()
+    google_fakes(web, [{"id": "d1", "status": "confirmed", "summary": "PTO", "start": {"date": str(mon)},
+                        "end": {"date": str(mon + timedelta(days=1))}}])
+    install(client, "google_calendar", who="fde")
+    cx = the_cx(client, "google_calendar", "usr_maya")
+    with client.conn.tx():  # the person revoked access in Google: refreshing fails
+        client.conn.execute("UPDATE connections SET token_expires_at=? WHERE id=?", (core.iso(core.now()), cx.id))
+    web.json("POST", r"oauth2\.googleapis\.com/token", {"error": "invalid_grant"}, 400)
+    r = client.delete(f"/api/connections/{cx.id}", headers=H("fde"))
+    assert r.json()["ok"] and r.json()["cleanup_error"]
+    assert client.get(f"/api/me/week?week={mon}", headers=H("fde")).json()["off_days"] == []
+
+
+def test_lapsed_jira_webhook_and_graph_subscription_are_recreated(client, web):
+    web.json("POST", r"auth\.atlassian\.com/oauth/token", {"access_token": "a", "refresh_token": "r", "expires_in": 3600})
+    web.json("GET", r"accessible-resources", [{"id": "c1", "url": "https://m.atlassian.net", "scopes": ["read:jira-work"]}])
+    ids = iter([55, 56])
+    web.route("POST", r"/ex/jira/c1/rest/api/3/webhook$", lambda r: (200, {"webhookRegistrationResult": [
+        {"createdWebhookId": next(ids)}]}))
+    web.json("PUT", r"webhook/refresh$", {"errorMessages": ["not found"]}, 404)
+    web.json("DELETE", r"/rest/api/3/webhook$", {}, 202)
+    install(client, "jira")
+    client.put("/api/deployments/dep_castellan/sync", headers=H("head"), json={"provider": "jira", "target": "AP"})
+    core.run_due(client.conn, core.now() + timedelta(days=26))
+    assert the_cx(client, "jira").webhook["webhook_id"] == 56
+    # Graph
+    web.json("POST", r"login\.microsoftonline\.com/common/oauth2/v2\.0/token", {"access_token": "m", "refresh_token": "r",
+                                                                                "expires_in": 3600})
+    web.json("GET", r"graph\.microsoft\.com/v1\.0/me$", {"id": "m-maya", "mail": "maya@meridian.example"})
+    web.json("GET", r"me/calendarView/delta", {"value": [], "@odata.deltaLink": "https://graph.microsoft.com/d?t=1"})
+    subs = iter(["sub-1", "sub-2"])
+    web.route("POST", r"v1\.0/subscriptions$", lambda r: (201, {"id": next(subs)}))
+    web.json("PATCH", r"v1\.0/subscriptions/sub-1$", {"error": {"code": "ResourceNotFound"}}, 404)
+    install(client, "outlook_calendar", who="fde")
+    cx = the_cx(client, "outlook_calendar", "usr_maya")
+    assert cx.webhook["subscription"] == "sub-1"
+    core.run_due(client.conn, core.now() + timedelta(days=3))
+    assert the_cx(client, "outlook_calendar", "usr_maya").webhook["subscription"] == "sub-2"
+
+
+def test_one_slack_workspace_belongs_to_one_fieldwork_workspace(client, web):
+    slack_fakes(web)
+    install(client, "slack")
+    other = {"Authorization": "Bearer demo-head-orbital"}
+    r = client.post("/api/connections/slack/start", headers=other)
+    state = parse_qs(urlparse(r.json()["url"]).query)["state"][0]
+    back = client.get(f"/oauth/callback?state={state}&code=x", headers={"Cookie": r.headers["set-cookie"].split(";")[0]},
+                      follow_redirects=False)
+    assert "already connected to another" in back.headers["location"].replace("+", " ")
+
+
+def test_hubspot_reads_companies_a_hundred_at_a_time(client, web):
+    web.json("POST", r"oauth/v3/token$", {"access_token": "hs1", "expires_in": 1800, "hub_id": 1})
+    web.json("POST", r"oauth/v3/token/introspect", {"hub_id": 1, "hub_domain": "x"})
+    web.json("GET", r"crm/v3/pipelines/deals", {"results": []})
+    deals = [{"id": str(i), "properties": {"dealname": f"D{i}", "hs_lastmodifieddate": str(1000 + i)}} for i in range(250)]
+    web.json("POST", r"deals/search", {"results": deals})
+    web.json("POST", r"associations/deals/companies/batch/read", {"results": [
+        {"from": {"id": str(i)}, "to": [{"toObjectId": 10000 + i}]} for i in range(250)]})
+
+    def companies(r):
+        assert len(r["json"]["inputs"]) <= 100
+        return (200, {"results": [{"id": x["id"], "properties": {"name": f"Co {x['id']}"}} for x in r["json"]["inputs"]]})
+    web.route("POST", r"objects/companies/batch/read", companies)
+    install(client, "hubspot")
+    cx = the_cx(client, "hubspot")
+    res = client.post(f"/api/connections/{cx.id}/sync", headers=H("head"), json={}).json()["result"]
+    assert res["created"] == 250 and len(web.called("POST", "objects/companies/batch/read")) == 3

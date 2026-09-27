@@ -103,7 +103,7 @@ class GoogleCalendar(GoogleOAuth):
     def sync(self, rt, cx, full=False):
         tok = cx.cursor.get("sync_token") if not full else None
         today = core.now().date()
-        items, removed, page, next_sync = [], [], None, None
+        items, removed, page, next_sync, complete = [], [], None, None, False
         for _ in range(40):
             params = {"singleEvents": "true", "maxResults": 250, "pageToken": page}
             if tok:
@@ -130,18 +130,20 @@ class GoogleCalendar(GoogleOAuth):
                     removed.append(ev["id"])  # it may have been time off before an edit
                     continue
                 start = _day(s.get("date") or s.get("dateTime"))
-                end = _day(e.get("date") or e.get("dateTime"))
+                end_raw = e.get("date") or e.get("dateTime") or ""
+                end = _day(end_raw)
                 if not start:
                     continue
-                if all_day and end:
-                    end = end - timedelta(days=1)  # all-day end dates are exclusive
+                if end and end > start and (all_day or end_raw[11:19] == "00:00:00"):
+                    end = end - timedelta(days=1)  # an end at midnight (or an all-day end) is exclusive
                 items.append((ev["id"], start, max(start, end or start), ev.get("summary") or "Out of office"))
             page = body.get("nextPageToken")
             next_sync = body.get("nextSyncToken") or next_sync
             if not page:
+                complete = True
                 break
         with rt.conn.tx():
-            if full:
+            if full and complete:
                 keep = {i[0] for i in items}
                 removed += [r["external_id"] for r in rt.conn.execute(
                     "SELECT external_id FROM time_off WHERE connection_id=?", (cx.id,)) if r["external_id"] not in keep]
@@ -172,12 +174,12 @@ class GoogleCalendar(GoogleOAuth):
                                             "renew_at": core.iso(exp - timedelta(days=1))})
 
     def before_disconnect(self, rt, cx):
+        with rt.conn.tx():  # first: what it collected goes, even if Google no longer answers
+            rt.conn.execute("DELETE FROM time_off WHERE connection_id=?", (cx.id,))
         ch = cx.webhook.get("channel")
         if ch:
             http.request("POST", f"{GCAL}/channels/stop", bearer=core.access_token(rt.conn, cx),
                          json_body={"id": ch["id"], "resourceId": ch.get("resource_id")})
-        with rt.conn.tx():
-            rt.conn.execute("DELETE FROM time_off WHERE connection_id=?", (cx.id,))
 
     def verify(self, rt, cx, headers, body, query):
         ch = cx.webhook.get("channel") or {}
@@ -271,9 +273,14 @@ class MicrosoftOAuth(Provider):
         exp = core.now() + timedelta(minutes=4000)
         sub = cx.webhook.get("subscription")
         if sub:
-            core.authed(rt.conn, cx, "PATCH", f"{GRAPH}/subscriptions/{sub}", "Graph subscription",
-                        json_body={"expirationDateTime": exp.strftime("%Y-%m-%dT%H:%M:%S.0000000Z")})
-        else:
+            try:
+                core.authed(rt.conn, cx, "PATCH", f"{GRAPH}/subscriptions/{sub}", "Graph subscription",
+                            json_body={"expirationDateTime": exp.strftime("%Y-%m-%dT%H:%M:%S.0000000Z")})
+            except http.HTTPError as e:
+                if e.status != 404:
+                    raise
+                sub = None  # it lapsed while we were away: make a new one
+        if not sub:
             r = core.authed(rt.conn, cx, "POST", f"{GRAPH}/subscriptions", "Graph subscription", json_body={
                 "changeType": "created,updated,deleted", "notificationUrl": core.hook_url(self.key, cx.id),
                 "resource": self.resource, "clientState": cx.webhook.get("key", ""),
@@ -293,7 +300,7 @@ class OutlookCalendar(MicrosoftOAuth):
     key = "outlook_calendar"
     name = "Outlook Calendar"
     category = "calendar"
-    scopes = ("offline_access", "User.Read", "Calendars.ReadBasic")
+    scopes = ("offline_access", "User.Read", "Calendars.Read")  # subscriptions on me/events need Calendars.Read
     resource = "me/events"
     poll_minutes = 60
     reconcile_hours = 24
@@ -301,7 +308,7 @@ class OutlookCalendar(MicrosoftOAuth):
     blurb = "Your Away days in Outlook come off your capacity automatically."
     setup = ("Register an app in Microsoft Entra ID (App registrations) with the callback URL above as a Web "
              "redirect URI, a client secret, and delegated Graph permissions offline_access, User.Read, "
-             "Calendars.ReadBasic (and Mail.ReadBasic for the email signal). Shared with Outlook Mail.")
+             "Calendars.Read (and Mail.ReadBasic for the email signal). Shared with Outlook Mail.")
 
     def sync(self, rt, cx, full=False):
         link = None if full else cx.cursor.get("delta")
@@ -310,7 +317,7 @@ class OutlookCalendar(MicrosoftOAuth):
         params = None if link else {"startDateTime": f"{today - timedelta(days=LOOKBACK_DAYS)}T00:00:00Z",
                                     "endDateTime": f"{today + timedelta(days=AHEAD_DAYS)}T00:00:00Z"}
         items, removed, delta = [], [], None
-        for _ in range(60):
+        for _ in range(60):  # a delta round ends with a deltaLink; stopping before it means we didn't see it all
             r = http.request("GET", url, params=params, bearer=core.access_token(rt.conn, cx),
                              headers={"Prefer": 'outlook.timezone="UTC", odata.maxpagesize=200'})
             if r.status == 410 and link:
@@ -340,7 +347,7 @@ class OutlookCalendar(MicrosoftOAuth):
             if not url:
                 break
         with rt.conn.tx():
-            if full:
+            if full and delta:
                 keep = {i[0] for i in items}
                 removed += [r["external_id"] for r in rt.conn.execute(
                     "SELECT external_id FROM time_off WHERE connection_id=?", (cx.id,)) if r["external_id"] not in keep]
@@ -354,9 +361,9 @@ class OutlookCalendar(MicrosoftOAuth):
         self.renew(rt, core.get(rt.conn, cx.id))
 
     def before_disconnect(self, rt, cx):
-        super().before_disconnect(rt, cx)
-        with rt.conn.tx():
+        with rt.conn.tx():  # first: what it collected goes, even if Microsoft no longer answers
             rt.conn.execute("DELETE FROM time_off WHERE connection_id=?", (cx.id,))
+        super().before_disconnect(rt, cx)
 
 
 GOOGLE_CALENDAR = core.register(GoogleCalendar())

@@ -226,6 +226,17 @@ def register(app, d) -> None:
                 raise HTTPException(422, {"github": "repo as owner/name", "linear": "team ID",
                                           "jira": "project key"}[body.provider] + " is required")
             sync = {"provider": body.provider, "target": body.target.strip()}
+            from .connect import core as cc
+            cx = cc.active(conn, c.tenant_id, body.provider)
+            if cx and sync["target"] not in (cx.extra.get("targets") or []):
+                # The install acts with its installer's access. A repo, team or project it hasn't been used with
+                # yet is an admin's call; after that, anyone who staffs a deployment can link to it.
+                if not c.can("integrations.manage"):
+                    raise HTTPException(403, f"{body.provider.title()} hasn't been linked to {sync['target']} yet;"
+                                             " ask someone who manages integrations to link it first")
+                with db.tx(conn):
+                    cc.save(conn, cx, extra={**cx.extra, "targets": sorted({*(cx.extra.get("targets") or []),
+                                                                             sync["target"]})})
         else:
             sync = {}
         with db.tx(conn):
@@ -451,7 +462,9 @@ def register(app, d) -> None:
     gate_pw = os.environ.get("FIELDWORK_ACCESS_PASSWORD", "")
     if gate_pw:
         cookie_val = hmac.new(gate_pw.encode(), b"fieldwork-gate", hashlib.sha256).hexdigest()
-        open_paths = ("/api/ingest/", "/integrations/", "/mcp", "/api/health", "/gate", "/api/operator/")
+        # Machine-to-machine paths carry their own signature checks; the gate is for people.
+        open_paths = ("/api/ingest/", "/integrations/", "/hooks/", "/oauth/", "/mcp", "/api/health", "/gate",
+                      "/api/operator/")
 
         @app.middleware("http")
         async def gate(request: Request, call_next):

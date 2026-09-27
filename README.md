@@ -38,7 +38,7 @@ Hosted demos serve that engine themselves.
 **Deploy:** see [LAUNCH.md](LAUNCH.md): one-click Render blueprint (`render.yaml`), or `docker compose up` for Postgres locally.
 
 ```
-python -m pytest -q                                              # 108 tests on SQLite (207 with Postgres too)
+python -m pytest -q                                              # 152 tests on SQLite (295 with Postgres too)
 FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # plus the same tests on Postgres
 ```
 
@@ -58,8 +58,14 @@ FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # plus the same
 - **Go-live checklist** on each deployment.
 - **Today.** Blocked work, what's due, findings waiting for your confirmation, and deployments that moved or need attention.
 - **Status reports, drafted for you.** Internal and customer versions, built only from the record: tasks, stage moves and confirmed findings. Share the customer version with one click, or copy it into an email.
-- **Slack.** Alerts when work is blocked, assigned or waiting for confirmation, plus a weekday digest.
-- **Two-way task sync** with GitHub Issues, Linear and Jira. Link a deployment to a repo, team or project and tasks flow both ways. Changes that arrive from the tracker are never echoed back.
+- **Live connections, one click each** ([docs/CONNECTIONS.md](docs/CONNECTIONS.md)). Every screen runs on the tools the team already uses, not last month's export:
+  - **Slack as an app.** Alerts carry the decision they ask for: confirm or reassign a delay's owner, take or resolve a flag, approve or reject an agent, say what a blocked task is waiting on. People get a DM with Start and Done when work lands on them, and `/fieldwork today` or `/fieldwork status <deployment>` answers without leaving Slack. A button runs as the person who pressed it, with their permissions.
+  - **GitHub, Linear and Jira**, two ways, with assignees. Linking a deployment to a repo or project subscribes to it automatically (and renews Jira's expiring webhooks).
+  - **Salesforce and HubSpot** feed the pipeline, and a won deal becomes a deployment in one click.
+  - **Harvest and Toggl** feed hours, burn and utilization; projects map to deployments.
+  - **Google and Outlook calendars**, connected by each person, take their days out off capacity.
+  - **Gmail and Outlook, opt-in**, give each deployment its last customer contact, and flag an active one that's gone quiet. Headers only; nothing but the customer, direction and time is kept.
+  - Every delivery is signature-checked, stored, then applied; failures retry and can be replayed; each connection shows its health; everything is reconciled nightly. The console updates itself as things change.
 - **Signed event webhooks** to feed any other system.
 - **AI tools.** An MCP server at `/mcp` works with Claude Code, Claude Desktop, Cursor, Codex, Gemini CLI, the OpenAI API and the Grok API. The console's AI tools page has copy-paste setup for each. An agent acts as its person, with their permissions, and its changes are audited under their name.
 - **Import.** Bring deployments and tasks in from a spreadsheet.
@@ -99,7 +105,9 @@ A stage can carry up to four engines. Teams plug in their own as signed webhooks
 - **Secrets encrypted at rest** (Fernet, rotatable). Tokens are stored as hashes.
 - **Company sign-in** over OIDC with PKCE, nonce, audience, expiry and domain checks. Required mode is available.
 - **Outbound safety.** Every call to engines, Slack, trackers, webhooks and identity providers is guarded against private addresses, refuses redirects, is size-capped and times out. It's queued in an outbox with retries, never made while a request is open.
-- **Inbound safety.** Tracker webhooks must be signed with the workspace's secret.
+- **Inbound safety.** Every webhook is signature-checked (per connection or per app), stored once by its delivery id, and applied through the same code the console uses. Slack buttons act as the person who pressed them, with their permissions.
+- **OAuth done carefully.** State is single-use, expires in 15 minutes and is bound to the browser that started it; PKCE wherever the provider supports it; tokens encrypted at rest and refreshed before they expire.
+- **Personal data stays small.** Calendars keep only time off; email keeps only customer, direction and time; disconnecting deletes what was collected.
 
 ## Layout
 
@@ -110,6 +118,8 @@ fieldwork/ops.py         delay ledger, flags and the sweep, capacity, pipeline, 
 fieldwork/mcp.py         MCP server (/mcp) and stdio bridge
 fieldwork/events.py      events, outbox worker, Slack, webhooks, digest
 fieldwork/trackers.py    GitHub, Linear, Jira two-way sync
+fieldwork/connect/       live connections: installs, event store, scheduler, health, live stream,
+                         and one module per family (slack, trackers, crm, timesheets, calendars, mail)
 fieldwork/reports.py     status report drafting
 fieldwork/config.py      workspace config and validation
 fieldwork/db.py          SQLite / Postgres adapter and migrations
@@ -125,10 +135,9 @@ examples/engines/        a webhook engine and a push engine to copy from
 
 - OAuth for remote MCP, which ChatGPT and Claude.ai connectors require. The other AI tools work today.
 - SAML and SCIM provisioning.
-- Slack slash commands and direct messages (today: channel alerts and the digest).
-- Assignee sync with trackers (status and title sync both ways today).
 - AI drafting with each team's own model. Reports are deterministic today.
-- Native Harvest, Toggl, Salesforce and HubSpot sync (CSV import today), calendar time off, and email silence as a delay signal.
+- A PSA connector (Kantata, Certinia) and Zendesk / Intercom for support signals. CSV import covers them for now.
+- The live connectors are tested against stand-ins for each vendor's documented API, not yet against the live services. The first real connection per vendor is the real test.
 - A connection pool, and IP pinning for outbound calls.
 
 ## License

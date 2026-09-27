@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fieldwork"
-version = "0.6.0"
+version = "0.7.0"
 description = "The deployment engine for deployment teams: run every deployment, see why it stalls, prove what it delivered."
 readme = "README.md"
 requires-python = ">=3.11"

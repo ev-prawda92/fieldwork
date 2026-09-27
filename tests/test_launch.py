@@ -179,9 +179,12 @@ def test_github_two_way_sync(client):
         patch = [c for c in gh.calls if c[0] == "PATCH"][-1]
         assert json.loads(patch[3])["state"] == "closed"
         # GitHub -> Fieldwork, signed, and not echoed back
-        num = links["tsk_002"]["external_id"]
-        payload = json.dumps({"action": "labeled", "issue": {"number": int(num), "state": "open", "title": "Walk Harrisburg AP lead",
-                                                             "labels": [{"name": "fieldwork:blocked"}]}}).encode()
+        ext = links["tsk_002"]["external_id"]
+        assert ext.startswith("o/r#")  # the repo is part of the id: issue numbers repeat across repos
+        num = ext.rsplit("#", 1)[1]
+        payload = json.dumps({"action": "labeled", "repository": {"full_name": "o/r"},
+                              "issue": {"number": int(num), "state": "open", "title": "Walk Harrisburg AP lead",
+                                        "labels": [{"name": "fieldwork:blocked"}]}}).encode()
         sig = "sha256=" + hmac.new(wh.encode(), payload, hashlib.sha256).hexdigest()
         bad = client.post("/integrations/meridian/github/webhook", content=payload,
                           headers={"X-GitHub-Event": "issues", "X-Hub-Signature-256": "sha256=00"})

@@ -448,9 +448,22 @@ def seed_operations(conn, T: str, ts: str) -> None:
     rnd = random.Random(42)
     conn.execute("UPDATE users SET weekly_hours=0 WHERE id IN ('usr_dana', 'usr_ruth')")
 
-    # Time sheets: weekly totals for past weeks, day by day this week.
+    # Time off (as a calendar would bring in) and the email signal (as opted-in mailboxes would).
     today = datetime.now(timezone.utc).date()
     this_week = ops.week_start(today)
+    far = this_week + timedelta(weeks=6)
+    ins("time_off", id="off_rosa1", tenant_id=T, user_id="usr_rosa", start_on=(far).isoformat(),
+        end_on=(far + timedelta(days=4)).isoformat(), source="google_calendar", external_id=None, connection_id=None,
+        title="Out of office", created_at=ts)
+    now_ = datetime.now(timezone.utc)
+    for i, (cust, dom, direction, days_ago) in enumerate([
+            ("cus_northfield", "northfieldsupply.example", "in", 2.2), ("cus_northfield", "northfieldsupply.example", "out", 0.8),
+            ("cus_harborview", "harborviewhealth.example", "in", 4.1), ("cus_harborview", "harborviewhealth.example", "out", 1.5),
+            ("cus_castellan", "castellanmutual.example", "in", 6.0), ("cus_castellan", "castellanmutual.example", "out", 0.3)]):
+        ins("contact_signals", tenant_id=T, user_id="usr_marcus", connection_id="seed", customer_id=cust, domain=dom,
+            direction=direction, at=(now_ - timedelta(days=days_ago)).isoformat(timespec="seconds"), external_id=f"seed{i}")
+
+    # Time sheets: weekly totals for past weeks, day by day this week.
     members = conn.execute("SELECT m.deployment_id, m.user_id, m.allocation, d.start_on, d.end_on"
                            " FROM deployment_members m JOIN deployments d ON d.id=m.deployment_id"
                            " WHERE d.tenant_id=?", (T,)).fetchall()
@@ -489,7 +502,8 @@ def seed_operations(conn, T: str, ts: str) -> None:
     for i, (name, cust, uc, val, p, st, start, hrs) in enumerate(opps, 1):
         ins("opportunities", id=f"opp_{i:02d}", tenant_id=T, name=name, customer=cust, use_case=uc, value=val,
             probability=p, stage=st, expected_start=D(start) if start is not None else None, weekly_hours=hrs,
-            source="import", external_id=f"crm-{1000 + i}", updated_at=ts)
+            source="import", external_id=f"crm-{1000 + i}", updated_at=ts,
+            deployment_id="dep_keystone" if st == "won" else None)
 
     # Delay history. Keystone's closed deployment taught the workspace that "blocked"
     # tasks here usually sit with the customer, so new ones are proposed that way.
