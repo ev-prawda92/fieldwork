@@ -541,6 +541,21 @@ def seed_operations(conn, T: str, ts: str) -> None:
                   evidence="Model provider returned 429s during the go-live load test",
                   started_at=datetime.now(timezone.utc) - timedelta(days=3), tenant_name=tenant["name"])
 
+    # Deployments don't move in a straight line: Harborview started testing while integration
+    # is still open, and Redline is paused while the customer reorganizes.
+    deps = {r["id"]: r for r in conn.execute("SELECT * FROM deployments WHERE tenant_id=?", (T,))}
+    ops.apply_states(conn, T, cfg, deps["dep_harborview"], {"test": "in_progress"}, "usr_jordan")
+    conn.execute("UPDATE deployment_stages SET entered_at=? WHERE deployment_id='dep_harborview' AND stage='test'",
+                 (TS(5),))
+    conn.execute("UPDATE stage_events SET at=? WHERE deployment_id='dep_harborview' AND to_stage='test'", (TS(5),))
+    conn.execute("UPDATE deployments SET hold_since=?, hold_reason=? WHERE id='dep_redline'",
+                 (TS(3), "Customer reorg; waiting on their new ops lead"))
+    ops.open_span(conn, T, deps["dep_redline"], signal="on_hold", dedupe_key="hold:dep_redline",
+                  evidence="Customer reorg; waiting on their new ops lead", started_at=datetime.now(timezone.utc) - timedelta(days=3),
+                  tenant_name=tenant["name"], reason="Customer reorg; waiting on their new ops lead")
+    conn.execute("UPDATE tasks SET waiting_on='customer', blocked_reason='Customer IT owns the tolerance setting'"
+                 " WHERE id='tsk_003'")
+
     # Flags raised by people (the sweep adds the rule flags)
     ins("flags", id="flg_ca_sponsor", tenant_id=T, deployment_id="dep_castellan", severity="high",
         text="Exec sponsor hasn't confirmed the go/no-go; go-live date at risk", rule_key=None,

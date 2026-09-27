@@ -127,7 +127,7 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
     """background=True (used by `serve`) starts the outbox worker and, in demo mode, the demo reset."""
     conn = db.connect(db_url)
     db.init(conn)
-    app = FastAPI(title="Fieldwork", version="0.5.0",
+    app = FastAPI(title="Fieldwork", version="0.6.0",
                   description="The platform deployment teams build their methodology on")
     app.state.conn = conn
 
@@ -606,14 +606,9 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
         step = keys.index(body.to_stage) - keys.index(r["stage"])
         if step != 1:
             c.require_on("deployment.jump", dep_id)
-        if step < 0 and not body.note.strip():
-            raise HTTPException(422, "moving a deployment backward needs a note")
-        ts = audit.now()
         with db.tx(conn):
-            conn.execute("UPDATE deployments SET stage=?, updated_at=? WHERE id=?", (body.to_stage, ts, dep_id))
-            add_stage_event(c, dep_id, r["stage"], body.to_stage, body.note, ts)
+            ops.move_to(conn, c.tenant_id, c.cfg, r, body.to_stage, c.uid, body.note.strip())
             c.log("deployment.advance", dep_id, {"from": r["stage"], "to": body.to_stage, "note": body.note})
-            ops.on_advance(conn, c.tenant_id, dep_id, r["stage"])
             emit(c, "deployment.advanced", dep_id, to=body.to_stage,
                  to_name=next(x["name"] for x in c.cfg["stages"] if x["key"] == body.to_stage))
         return {"stage": body.to_stage}
@@ -788,6 +783,8 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
         assignee_id: str | None = None
         due: str | None = None
         visibility: str | None = None
+        waiting_on: str | None = None          # customer | team | model_vendor | software_vendor | "" (unsure)
+        blocked_reason: str | None = Field(default=None, max_length=300)
 
     @app.patch("/api/tasks/{task_id}")
     def patch_task(task_id: str, body: TaskPatch, c: Ctx = Depends(ctx)):
@@ -812,6 +809,12 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
             changes["assignee_id"] = body.assignee_id
         if body.due is not None:
             changes["due"] = body.due or None
+        if body.waiting_on is not None:
+            if body.waiting_on and body.waiting_on not in ops.OWNERS:
+                raise HTTPException(422, f"waiting_on must be one of {', '.join(ops.OWNERS)}")
+            changes["waiting_on"] = body.waiting_on or None
+        if body.blocked_reason is not None:
+            changes["blocked_reason"] = body.blocked_reason.strip()
         if body.visibility is not None:
             if body.visibility not in VISIBILITY:
                 raise HTTPException(422, "visibility must be internal or shared")
@@ -828,10 +831,15 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
             conn.execute(f"UPDATE tasks SET {', '.join(k + '=?' for k in changes)} WHERE id=?",
                          (*changes.values(), task_id))
             c.log("task.update", task_id, {k: v for k, v in changes.items() if k != "updated_at"})
+            merged = {**dict(t), **changes}
             if "status" in changes:
-                ops.on_task_status(conn, c.tenant_id, c.tenant_name, c.cfg,
-                                   {**dict(t), "assignee_id": changes.get("assignee_id", t["assignee_id"])},
+                ops.on_task_status(conn, c.tenant_id, c.tenant_name, c.cfg, {**merged, "status": t["status"]},
                                    changes["status"])
+                if changes["status"] != "blocked":
+                    conn.execute("UPDATE tasks SET waiting_on=NULL, blocked_reason='' WHERE id=?", (task_id,))
+            elif merged["status"] == "blocked" and ("waiting_on" in changes or "blocked_reason" in changes) \
+                    and merged.get("waiting_on"):
+                ops.on_waiting_on(conn, merged, merged["waiting_on"], merged.get("blocked_reason") or "")
             title = t["title"]
             assignee_name = uname(changes.get("assignee_id", t["assignee_id"]))
             if changes.get("status") == "blocked" and t["status"] != "blocked":

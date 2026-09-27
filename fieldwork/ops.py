@@ -49,6 +49,7 @@ SIGNALS = {
     "change_board": ("customer", "Customer change board"),
     "model_access": ("model_vendor", "Model access or rate limits"),
     "vendor_error": ("software_vendor", "Third-party system limit"),
+    "on_hold": ("customer", "Deployment on hold"),
     "manual": ("team", "Logged by a person"),
 }
 DEDUCIBLE = {"model_access"}
@@ -284,8 +285,9 @@ def on_task_status(conn, tenant_id: str, tenant_name: str, cfg: dict, task, new_
     key = f"task:{task['id']}"
     if new_status == "blocked" and old != "blocked":
         dep = conn.execute("SELECT * FROM deployments WHERE id=?", (task["deployment_id"],)).fetchone()
-        owner = None
-        if task["assignee_id"]:
+        owner = task.get("waiting_on") if hasattr(task, "get") else None
+        stated = owner in OWNERS
+        if not stated and task["assignee_id"]:
             a = conn.execute("SELECT role FROM users WHERE id=?", (task["assignee_id"],)).fetchone()
             if a and cfg["permissions"].get("task.view_internal", {}).get(a["role"]) is None:
                 owner = "customer"  # it's sitting with someone who only sees shared work: the customer
@@ -294,7 +296,10 @@ def on_task_status(conn, tenant_id: str, tenant_name: str, cfg: dict, task, new_
             conn, tenant_id, dep, signal=signal, dedupe_key=key, owner_hint=owner, tenant_name=tenant_name,
             evidence=f"“{task['title']}” marked blocked" + (f" in {origin.title()}" if origin != "fieldwork" else ""),
             stage=task["stage"])
-        if owner == "customer":
+        if created and stated:
+            conn.execute("UPDATE delays SET proposal_basis=?, proposed_reason=COALESCE(NULLIF(?, ''), proposed_reason)"
+                         " WHERE id=?", ("said by the person who marked it blocked", task.get("blocked_reason") or "", sid))
+        elif created and owner == "customer":
             conn.execute("UPDATE delays SET proposal_basis=? WHERE id=? AND status='open'",
                          ("assigned to someone on the customer side", sid))
         if created:
@@ -307,9 +312,15 @@ def on_task_status(conn, tenant_id: str, tenant_name: str, cfg: dict, task, new_
         close_span(conn, tenant_id, key)
 
 
-def on_advance(conn, tenant_id: str, dep_id: str, from_stage: str) -> None:
-    conn.execute("UPDATE delays SET ended_at=? WHERE tenant_id=? AND deployment_id=? AND stage=?"
-                 " AND signal='stage_overrun' AND ended_at IS NULL", (iso(now()), tenant_id, dep_id, from_stage))
+def on_waiting_on(conn, task, owner: str, reason: str) -> None:
+    """Someone said who a blocked task is waiting on: that becomes the delay's proposal, unless a person
+    already decided it."""
+    conn.execute("UPDATE delays SET proposed_owner=?, proposal_basis=?,"
+                 " proposed_reason=COALESCE(NULLIF(?, ''), proposed_reason)"
+                 " WHERE tenant_id=? AND dedupe_key=? AND ended_at IS NULL AND status='open'",
+                 (owner, "said by the person who marked it blocked", reason, task["tenant_id"], f"task:{task['id']}"))
+
+
 
 
 # ==================================================================== capacity
@@ -437,31 +448,134 @@ def pipeline_capacity(conn, cfg: dict, tenant_id: str, opps: list, today: date |
     return {"checks": checks, "collisions": collisions}
 
 
-# =============================================================== stage timing
+# =============================================================== stage states
+# Deployments don't move in a straight line. Each stage carries its own state,
+# more than one can be in progress, stages can be skipped or reopened, and a
+# deployment can be put on hold. Nothing here gates work: states are a record
+# of what happened, and the clock is the only thing they drive.
 
-def stage_entered(conn, dep) -> datetime:
-    r = conn.execute("SELECT at FROM stage_events WHERE deployment_id=? AND to_stage=? ORDER BY id DESC LIMIT 1",
-                     (dep["id"], dep["stage"])).fetchone()
-    return parse_ts(r["at"] if r else dep["created_at"])
-
-
-def days_in_stage(conn, dep, at: datetime | None = None) -> float:
-    return round(((at or now()) - stage_entered(conn, dep)).total_seconds() / 86400, 1)
+STAGE_STATES = ("not_started", "in_progress", "done", "skipped")
 
 
-def stage_durations(conn, tenant_id: str, dep_ids: set | None = None) -> dict:
-    """Completed stage durations, per stage key, from the stage history."""
+def _history_states(conn, cfg: dict, dep) -> dict:
+    """States derived from the stage history, for deployments that predate per-stage state."""
+    events = conn.execute("SELECT to_stage, at FROM stage_events WHERE deployment_id=? ORDER BY id",
+                          (dep["id"],)).fetchall()
+    keys = config.stage_keys(cfg)
+    ci = keys.index(dep["stage"]) if dep["stage"] in keys else -1
+    out = {}
+    for i, k in enumerate(keys):
+        entries = [j for j, e in enumerate(events) if e["to_stage"] == k]
+        if i == ci:
+            out[k] = {"state": "in_progress", "entered_at": events[entries[-1]]["at"] if entries else dep["created_at"],
+                      "done_at": None}
+        elif i < ci:
+            if entries:
+                j = entries[0]
+                nxt = next((e["at"] for e in events[j + 1:] if e["to_stage"] != k), None)
+                out[k] = {"state": "done", "entered_at": events[j]["at"], "done_at": nxt}
+            else:
+                out[k] = {"state": "skipped", "entered_at": None, "done_at": None}
+        else:
+            out[k] = {"state": "not_started", "entered_at": None, "done_at": None}
+    return out
+
+
+def stage_states(conn, cfg: dict, dep) -> dict:
+    """{stage key: {state, entered_at, done_at}} in the workspace's stage order."""
+    rows = {r["stage"]: {"state": r["state"], "entered_at": r["entered_at"], "done_at": r["done_at"]}
+            for r in conn.execute("SELECT * FROM deployment_stages WHERE deployment_id=?", (dep["id"],))}
+    base = rows or _history_states(conn, cfg, dep)
+    return {k: dict(base.get(k) or {"state": "not_started", "entered_at": None, "done_at": None})
+            for k in config.stage_keys(cfg)}
+
+
+def primary_stage(cfg: dict, states: dict) -> str:
+    """The stage a deployment is 'in': the furthest one in progress, else the next one not started."""
+    keys = config.stage_keys(cfg)
+    live = [k for k in keys if states[k]["state"] == "in_progress"]
+    if live:
+        return live[-1]
+    return next((k for k in keys if states[k]["state"] == "not_started"), keys[-1])
+
+
+def apply_states(conn, tenant_id: str, cfg: dict, dep, changes: dict, actor: str, note: str = "") -> str:
+    """Write stage state changes, keep deployments.stage and the stage history in step. Inside a transaction.
+    Returns the deployment's primary stage afterwards."""
+    ts = audit.now()
+    states = stage_states(conn, cfg, dep)
+    for k, new in changes.items():
+        cur = states[k]
+        if new == cur["state"]:
+            continue
+        if new == "in_progress":
+            cur.update(entered_at=ts, done_at=None)
+        elif new == "done":
+            cur.update(entered_at=cur["entered_at"] or ts, done_at=ts)
+        elif new == "not_started":
+            cur.update(entered_at=None, done_at=None)
+        if cur["state"] == "in_progress":  # leaving: its overrun delay ends here
+            close_span(conn, tenant_id, f"{dep['id']}:stage_overrun:{k}")
+        cur["state"] = new
+    for k, v in states.items():
+        conn.execute("INSERT INTO deployment_stages (deployment_id, tenant_id, stage, state, entered_at, done_at,"
+                     " updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT (deployment_id, stage) DO UPDATE SET"
+                     " state=excluded.state, entered_at=excluded.entered_at, done_at=excluded.done_at,"
+                     " updated_at=excluded.updated_at",
+                     (dep["id"], tenant_id, k, v["state"], v["entered_at"], v["done_at"], ts))
+    prim = primary_stage(cfg, states)
+    conn.execute("UPDATE deployments SET stage=?, updated_at=? WHERE id=?", (prim, ts, dep["id"]))
+    if prim != dep["stage"]:
+        conn.execute("INSERT INTO stage_events (tenant_id, deployment_id, from_stage, to_stage, actor_id, note, at)"
+                     " VALUES (?,?,?,?,?,?,?)", (tenant_id, dep["id"], dep["stage"], prim, actor, note, ts))
+    return prim
+
+
+def move_to(conn, tenant_id: str, cfg: dict, dep, to: str, actor: str, note: str = "") -> str:
+    """'Move to a stage', either direction: earlier work in progress is done, later work reopens."""
+    keys = config.stage_keys(cfg)
+    states = stage_states(conn, cfg, dep)
+    i = keys.index(to)
+    changes = {to: "in_progress"}
+    for j, k in enumerate(keys):
+        if j < i and states[k]["state"] == "in_progress":
+            changes[k] = "done"
+        if j > i and states[k]["state"] == "in_progress":
+            changes[k] = "not_started"
+    return apply_states(conn, tenant_id, cfg, dep, changes, actor, note)
+
+
+def held_days(conn, dep_id: str, since: datetime, at: datetime) -> float:
+    """Days on hold between two moments: they don't count against a stage's clock."""
+    total = 0.0
+    for r in conn.execute("SELECT started_at, ended_at FROM delays WHERE deployment_id=? AND signal='on_hold'",
+                          (dep_id,)):
+        a, b = max(parse_ts(r["started_at"]), since), min(parse_ts(r["ended_at"]) or at, at)
+        if b > a:
+            total += (b - a).total_seconds() / 86400
+    return total
+
+
+def active_days(conn, dep_id: str, entered: str | None, until: str | None = None, at: datetime | None = None) -> float | None:
+    if not entered:
+        return None
+    at = at or now()
+    a, b = parse_ts(entered), parse_ts(until) if until else at
+    return round(max(0.0, (b - a).total_seconds() / 86400 - held_days(conn, dep_id, a, b)), 1)
+
+
+def days_in_stage(conn, cfg: dict, dep, key: str | None = None, at: datetime | None = None) -> float:
+    st = stage_states(conn, cfg, dep)[key or dep["stage"]]
+    return active_days(conn, dep["id"], st["entered_at"] or dep["created_at"], None, at) or 0.0
+
+
+def stage_durations(conn, cfg: dict, deps: list) -> dict:
+    """Finished stage durations per stage key, not counting time on hold."""
     out: dict = {}
-    rows = [r for r in conn.execute("SELECT deployment_id, to_stage, at FROM stage_events WHERE tenant_id=?"
-                                    " ORDER BY deployment_id, id", (tenant_id,)).fetchall()
-            if dep_ids is None or r["deployment_id"] in dep_ids]
-    prev: dict = {}
-    for r in rows:
-        p = prev.get(r["deployment_id"])
-        if p:
-            days = (parse_ts(r["at"]) - parse_ts(p["at"])).total_seconds() / 86400
-            out.setdefault(p["to_stage"], []).append(days)
-        prev[r["deployment_id"]] = r
+    for dep in deps:
+        for k, v in stage_states(conn, cfg, dep).items():
+            if v["state"] == "done" and v["entered_at"] and v["done_at"]:
+                out.setdefault(k, []).append(active_days(conn, dep["id"], v["entered_at"], v["done_at"]))
     return out
 
 
@@ -507,13 +621,18 @@ def latest_finding(conn, dep_id: str, engine: str):
 
 def _conditions(conn, cfg: dict, dep, at: datetime) -> list[dict]:
     out = []
-    stages = {s["key"]: s for s in cfg["stages"]}
-    st = stages.get(dep["stage"])
-    if st and dep["stage"] != cfg["stages"][-1]["key"]:  # the last stage is where finished work rests
-        dis = days_in_stage(conn, dep, at)
+    states = stage_states(conn, cfg, dep)
+    last = cfg["stages"][-1]["key"]
+    for st in cfg["stages"]:
+        k = st["key"]
+        # The last stage is where finished work rests, and a deployment on hold isn't on the clock.
+        if states[k]["state"] != "in_progress" or k == last or dep["hold_since"]:
+            continue
+        dis = active_days(conn, dep["id"], states[k]["entered_at"] or dep["created_at"], None, at)
         tgt = st.get("target_days")
         if tgt and dis > tgt:
-            out.append({"rule": "stage_overrun", "key": f"stage_overrun:{dep['stage']}",
+            out.append({"rule": "stage_overrun", "key": f"stage_overrun:{k}", "stage": k,
+                        "entered_at": states[k]["entered_at"] or dep["created_at"],
                         "severity": "high" if dis > 1.5 * tgt else "med",
                         "text": f"{st['name']} is past its target: {dis:g} days against {tgt}."})
     b, p = burn(conn, dep), progress(dep, at.date())
@@ -522,11 +641,12 @@ def _conditions(conn, cfg: dict, dep, at: datetime) -> list[dict]:
                     "text": f"Budget burning ahead of schedule: {b:.0%} of hours spent at {p:.0%} of the period."})
     keys = config.stage_keys(cfg)
     conf_stage = next((s["key"] for s in cfg["stages"] if "conformance" in s.get("engines", [])), None)
-    if conf_stage and dep["stage"] in keys and 0 <= keys.index(dep["stage"]) - keys.index(conf_stage) <= 1:
+    live_near = [k for k in keys if states[k]["state"] == "in_progress"]
+    if conf_stage and any(0 <= keys.index(k) - keys.index(conf_stage) <= 1 for k in live_near):
         f = latest_finding(conn, dep["id"], "conformance")
         if f and json.loads(f["result_json"]).get("status") == "fail":
             out.append({"rule": "conformance_gate", "key": "conformance_gate", "severity": "high",
-                        "text": "The latest conformance run fails its gate. Go-live is held."})
+                        "text": "The latest conformance run is below its bar, with a critical case failing."})
     for t in conn.execute("SELECT t.id, t.title, t.updated_at, d.started_at FROM tasks t LEFT JOIN delays d"
                           " ON d.tenant_id=t.tenant_id AND d.dedupe_key='task:' || t.id AND d.ended_at IS NULL"
                           " WHERE t.deployment_id=? AND t.status='blocked'", (dep["id"],)):
@@ -567,15 +687,15 @@ def evaluate(conn, tenant_id: str, tenant_name: str, cfg: dict, dep, at: datetim
                 audit.record(conn, tenant_id, "rule:" + c["rule"], "flag.update", existing[key]["id"],
                              {"severity": c["severity"], "text": c["text"]})
         if c["rule"] == "stage_overrun":
-            tgt = next(s["target_days"] for s in cfg["stages"] if s["key"] == dep["stage"])
+            tgt = next(s["target_days"] for s in cfg["stages"] if s["key"] == c["stage"])
             sid, created = reopen_or_open(conn, tenant_id, dep, signal="stage_overrun",
-                                     dedupe_key=f"{dep['id']}:{key}", evidence=c["text"],
-                                     started_at=stage_entered(conn, dep) + timedelta(days=tgt),
-                                     tenant_name=tenant_name)
+                                          dedupe_key=f"{dep['id']}:{key}", evidence=c["text"],
+                                          started_at=parse_ts(c["entered_at"]) + timedelta(days=tgt),
+                                          tenant_name=tenant_name, stage=c["stage"])
             if created:
                 opened.append(sid)
                 audit.record(conn, tenant_id, "rule:stage_overrun", "delay.open", sid,
-                             {"deployment": dep["id"], "stage": dep["stage"], "signal": "stage_overrun"})
+                             {"deployment": dep["id"], "stage": c["stage"], "signal": "stage_overrun"})
                 events.emit(conn, cfg, tenant_id, "delay.opened",
                             {"deployment_id": dep["id"], "deployment": dep["name"],
                              "reason": SIGNALS["stage_overrun"][1], "actor": "Rules",
@@ -622,6 +742,8 @@ def start_sweeper(conn, stop: threading.Event, minutes: float = 30.0) -> None:
 
 
 def status_of(dep, open_flags: list) -> str:
+    if dep["hold_since"]:
+        return "on_hold"
     if dep["health"] == "blocked" or any(f["severity"] == "high" for f in open_flags):
         return "off_track"
     if dep["health"] == "at_risk" or open_flags:
@@ -875,28 +997,36 @@ def register(app, d) -> None:
 
     # --------------------------------------------------------------- portfolio
 
-    def chain_cells(c, dep, dis: float, overrun: bool) -> list:
-        keys = config.stage_keys(c.cfg)
-        i = keys.index(dep["stage"]) if dep["stage"] in keys else -1
-        cells = []
-        for j, s in enumerate(c.cfg["stages"]):
-            if j < i:
-                state = "done"
-            elif j == i:
-                state = "stalled" if overrun or dep["health"] == "blocked" else "progress"
+    def stage_rows(c, dep, internal: bool) -> list:
+        """What happened on each stage: state, days, and whether it's past its target."""
+        states = stage_states(conn, c.cfg, dep)
+        last = c.cfg["stages"][-1]["key"]
+        out = []
+        for s_ in c.cfg["stages"]:
+            k = s_["key"]; v = states[k]
+            days = active_days(conn, dep["id"], v["entered_at"], v["done_at"]) if v["entered_at"] else None
+            live = v["state"] == "in_progress"
+            over = bool(internal and live and k != last and not dep["hold_since"] and days is not None
+                        and s_["target_days"] and days > s_["target_days"])
+            if live and dep["hold_since"]:
+                cell = "hold"
+            elif live:
+                cell = "stalled" if over else "progress"  # red means past target, nothing else
             else:
-                state = "pending"
-            cells.append({"key": s["key"], "name": s["name"], "state": state})
-        return cells
+                cell = {"done": "done", "skipped": "skipped"}.get(v["state"], "pending")
+            out.append({"key": k, "name": s_["name"], "state": cell, "status": v["state"], "days": days,
+                        "target_days": s_["target_days"] if internal else None, "overrun": over,
+                        "entered_at": v["entered_at"], "done_at": v["done_at"]})
+        return out
 
     def portfolio_row(c, dep, flags_by: dict, delays_by: dict, cust: dict) -> dict:
         stage = next((s for s in c.cfg["stages"] if s["key"] == dep["stage"]), None)
-        dis = days_in_stage(conn, dep)
-        target = stage["target_days"] if stage else None
         internal = c.can_on("task.view_internal", dep["id"])
-        last = c.cfg["stages"][-1]["key"]
-        # The last stage is where finished work rests; and "stalled" is an internal signal.
-        overrun = bool(target and dis > target and dep["stage"] != last and internal)
+        srows = stage_rows(c, dep, internal)
+        here = next((x for x in srows if x["key"] == dep["stage"]), {})
+        dis = here.get("days") or 0.0
+        target = stage["target_days"] if stage else None
+        overrun = any(x["overrun"] for x in srows)  # "stalled" is an internal signal; stage_rows only sets it inside
         keys = config.stage_keys(c.cfg)
         i = keys.index(dep["stage"]) if dep["stage"] in keys else -1
         fields = json.loads(dep["fields_json"] or "{}")
@@ -909,8 +1039,11 @@ def register(app, d) -> None:
         row = {"id": dep["id"], "name": dep["name"], "customer": cust.get(dep["customer_id"], {}).get("name", ""),
                "stage": dep["stage"], "stage_name": stage["name"] if stage else dep["stage"],
                "days_in_stage": dis, "target_days": target if internal else None, "overrun": overrun,
-               "cells": chain_cells(c, dep, dis, overrun), "next_milestone": milestone,
-               "health": dep["health"]}
+               "cells": [{"key": x["key"], "name": x["name"], "state": x["state"]} for x in srows],
+               "stages": srows, "next_milestone": milestone, "health": dep["health"],
+               "on_hold": ({"since": dep["hold_since"], "reason": dep["hold_reason"],
+                            "days": round((now() - parse_ts(dep["hold_since"])).total_seconds() / 86400, 1)}
+                           if dep["hold_since"] else None)}
         if not internal:
             return row
         fl = flags_by.get(dep["id"], [])
@@ -969,7 +1102,7 @@ def register(app, d) -> None:
         last = config.stage_keys(c.cfg)[-1]
         # headline numbers
         visible_ids = set(ids)
-        durations = stage_durations(conn, c.tenant_id, visible_ids)
+        durations = stage_durations(conn, c.cfg, [x for x in deps if x["id"] in visible_ids])
         medians = []
         for s in c.cfg["stages"]:
             ds = durations.get(s["key"], [])
@@ -981,12 +1114,11 @@ def register(app, d) -> None:
             for dep in deps:
                 if dep["id"] not in visible_ids:
                     continue
-                first = conn.execute("SELECT at FROM stage_events WHERE deployment_id=? ORDER BY id LIMIT 1",
-                                     (dep["id"],)).fetchone()
-                hit = conn.execute("SELECT at FROM stage_events WHERE deployment_id=? AND to_stage=?"
-                                   " ORDER BY id LIMIT 1", (dep["id"], ls)).fetchone()
-                if first and hit:
-                    ttl.append((parse_ts(hit["at"]) - parse_ts(first["at"])).total_seconds() / 86400)
+                st = stage_states(conn, c.cfg, dep)
+                starts = [v["entered_at"] for v in st.values() if v["entered_at"]]
+                hit = st[ls]["entered_at"]
+                if starts and hit:
+                    ttl.append(active_days(conn, dep["id"], min(starts), hit))
         keys = config.stage_keys(c.cfg)
         ttl_target = sum(s["target_days"] for s in c.cfg["stages"][:keys.index(ls)]) if ls else None
         active = [r for r in rows if r["id"] in visible_ids and r["stage"] != last]
@@ -997,6 +1129,7 @@ def register(app, d) -> None:
         out["kpis"] = {
             "active_deployments": len(active),
             "off_track": sum(1 for r in rows if r.get("status") == "off_track"),
+            "on_hold": sum(1 for r in rows if r.get("status") == "on_hold"),
             "at_risk": sum(1 for r in rows if r.get("status") == "at_risk"),
             "open_flags": sum(r.get("flags", 0) for r in rows),
             "contract_value": round(sum(arr_seen.values()), 2) if arr_seen else None,
@@ -1008,6 +1141,63 @@ def register(app, d) -> None:
         out["stage_medians"] = medians
         out["delays"] = rollup([x for v in delays_by.values() for x in v], labels(c))
         return out
+
+    # ------------------------------------------------------ stage state, hold
+
+    class StageStateIn(BaseModel):
+        state: str
+        note: str = Field(default="", max_length=500)
+
+    @app.put("/api/deployments/{dep_id}/stages/{key}")
+    def set_stage_state(dep_id: str, key: str, body: StageStateIn, c: Ctx = Depends(ctx)):
+        """Mark one stage done, skipped, in progress or not started. Several can be in progress."""
+        dep = c.deployment(dep_id)
+        c.require_on("deployment.advance", dep_id)
+        if key not in config.stage_keys(c.cfg):
+            raise HTTPException(404, "no such stage")
+        if body.state not in STAGE_STATES:
+            raise HTTPException(422, f"state must be one of {', '.join(STAGE_STATES)}")
+        with db.tx(conn):
+            prim = apply_states(conn, c.tenant_id, c.cfg, dep, {key: body.state}, c.uid, body.note.strip())
+            c.log("stage.state", dep_id, {"stage": key, "state": body.state, "note": body.note, "primary": prim})
+            if prim != dep["stage"]:
+                d.emit(c, "deployment.advanced", dep_id, to=prim,
+                       to_name=next(x["name"] for x in c.cfg["stages"] if x["key"] == prim))
+        return {"stage": prim, "stages": stage_rows(c, conn.execute("SELECT * FROM deployments WHERE id=?",
+                                                                     (dep_id,)).fetchone(), True)}
+
+    class HoldIn(BaseModel):
+        on: bool
+        reason: str = Field(default="", max_length=300)
+        waiting_on: str | None = None
+
+    @app.post("/api/deployments/{dep_id}/hold")
+    def hold(dep_id: str, body: HoldIn, c: Ctx = Depends(ctx)):
+        """Pause a deployment: the stage clock stops, and the pause is recorded as a delay."""
+        dep = c.deployment(dep_id)
+        c.require_on("deployment.edit", dep_id)
+        if not c.can_on("task.view_internal", dep_id):
+            raise HTTPException(403, "holds are set by the delivery team")
+        if body.waiting_on is not None and body.waiting_on not in OWNERS:
+            raise HTTPException(422, f"waiting_on must be one of {', '.join(OWNERS)}")
+        key = f"hold:{dep_id}"
+        with db.tx(conn):
+            if body.on and not dep["hold_since"]:
+                ts = audit.now()
+                conn.execute("UPDATE deployments SET hold_since=?, hold_reason=?, updated_at=? WHERE id=?",
+                             (ts, body.reason, ts, dep_id))
+                sid, _ = reopen_or_open(conn, c.tenant_id, dep, signal="on_hold", dedupe_key=key,
+                                        owner_hint=body.waiting_on, reason=body.reason or None,
+                                        evidence=body.reason, tenant_name=c.tenant_name)
+                c.log("deployment.hold", dep_id, {"on": True, "reason": body.reason, "waiting_on": body.waiting_on,
+                                                  "delay": sid})
+                d.emit(c, "deployment.health", dep_id, health="on hold")
+            elif not body.on and dep["hold_since"]:
+                conn.execute("UPDATE deployments SET hold_since=NULL, hold_reason='', updated_at=? WHERE id=?",
+                             (audit.now(), dep_id))
+                close_span(conn, c.tenant_id, key)
+                c.log("deployment.hold", dep_id, {"on": False})
+        return {"on_hold": body.on}
 
     # ------------------------------------------------------------------- team
 
@@ -1045,7 +1235,11 @@ def register(app, d) -> None:
         days = [dict(r) for r in conn.execute(
             "SELECT day, SUM(hours) hours FROM time_entries WHERE user_id=? AND day>=? AND day<=?"
             " GROUP BY day ORDER BY day", (c.uid, ws.isoformat(), (ws + timedelta(days=6)).isoformat()))]
-        return {**pw, "week": ws.isoformat(), "by_deployment": by_dep, "by_day": days}
+        today = now().date().isoformat()
+        planned_today = round(sum(round(x["hours"] / 5 * 2) / 2 for x in pw["allocations"]), 1)
+        return {**pw, "week": ws.isoformat(), "by_deployment": by_dep, "by_day": days,
+                "today": {"day": today, "logged": round(sum(x["hours"] for x in days if x["day"] == today), 1),
+                          "planned": planned_today}}
 
     class TimeIn(BaseModel):
         day: str
@@ -1068,6 +1262,30 @@ def register(app, d) -> None:
                                                      body.hours, "console", audit.now()))
             c.log("time.log", c.uid, {"day": body.day[:10], "hours": body.hours, "deployment": body.deployment_id})
         return {"ok": True}
+
+    @app.post("/api/time/today", status_code=201)
+    def log_today(c: Ctx = Depends(ctx)):
+        """One click: log today's planned hours on each deployment you're allocated to, unless already logged."""
+        if not c.can("task.view_internal"):
+            raise HTTPException(403, "time is logged by the delivery team")
+        day = now().date()
+        pw = person_week(conn, c.user, week_start(day))
+        logged = []
+        with db.tx(conn):
+            for a in pw["allocations"]:
+                if conn.execute("SELECT 1 FROM time_entries WHERE user_id=? AND deployment_id=? AND day=?",
+                                (c.uid, a["deployment_id"], day.isoformat())).fetchone():
+                    continue
+                h = round(a["hours"] / 5 * 2) / 2  # a day's share, to the half hour
+                if h <= 0:
+                    continue
+                conn.execute("INSERT INTO time_entries (tenant_id, user_id, deployment_id, day, hours, source,"
+                             " created_at) VALUES (?,?,?,?,?,?,?)",
+                             (c.tenant_id, c.uid, a["deployment_id"], day.isoformat(), h, "planned", audit.now()))
+                logged.append({"deployment_id": a["deployment_id"], "deployment": a["deployment"], "hours": h})
+            if logged:
+                c.log("time.log", c.uid, {"day": day.isoformat(), "planned": logged})
+        return {"logged": logged, "hours": sum(x["hours"] for x in logged)}
 
     class AllocIn(BaseModel):
         allocation: float = Field(ge=0, le=1.5)

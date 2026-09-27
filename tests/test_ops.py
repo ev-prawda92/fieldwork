@@ -168,7 +168,7 @@ def test_portfolio_for_the_team(client):
     assert cas["conformance"]["status"] == "fail" and cas["flags_high"] >= 2
     assert cas["delay"]["days"] >= 12 and cas["delay"]["label"] == "Customer"
     assert rows["dep_harborview"]["burn"] > rows["dep_harborview"]["progress"]
-    assert rows["dep_redline"]["cells"][0]["state"] == "progress"
+    assert rows["dep_redline"]["cells"][0]["state"] == "hold"
     k = p["kpis"]
     assert k["active_deployments"] == 4 and k["contract_value"] == 1800000
     assert k["median_days_to_live"] is not None and k["days_to_live_target"] == 56
@@ -450,3 +450,87 @@ def test_bad_input_is_a_422_not_a_500(client):
 
 def test_customer_cant_probe_checklist_items(client):
     assert client.patch("/api/checklist/chk_ca1", headers=H("customer"), json={"done": True}).status_code == 404
+
+
+# ------------------------------------------- non-linear stages, hold, quick actions
+
+def stages_of(client, dep, who="head"):
+    row = next(r for r in client.get("/api/portfolio", headers=H(who)).json()["deployments"] if r["id"] == dep)
+    return row, {x["key"]: x for x in row["stages"]}
+
+
+def test_stages_overlap_skip_and_reopen(client):
+    row, st = stages_of(client, "dep_harborview")
+    assert st["integrate"]["status"] == "in_progress" and st["test"]["status"] == "in_progress"
+    assert row["stage"] == "test"  # the furthest stage in progress
+    r = client.put("/api/deployments/dep_harborview/stages/integrate", headers=H("ai"), json={"state": "done"})
+    assert r.status_code == 200 and r.json()["stage"] == "test"
+    r = client.put("/api/deployments/dep_harborview/stages/golive", headers=H("ai"), json={"state": "skipped"})
+    assert r.status_code == 200
+    row, st = stages_of(client, "dep_harborview")
+    assert [c["state"] for c in row["cells"]][:4] == ["done", "done", "progress", "skipped"]
+    # Reopen integrate: rework is a record, not a failure.
+    client.put("/api/deployments/dep_harborview/stages/integrate", headers=H("ai"), json={"state": "in_progress"})
+    row, st = stages_of(client, "dep_harborview")
+    assert st["integrate"]["status"] == "in_progress" and st["integrate"]["days"] == 0
+    assert client.put("/api/deployments/dep_harborview/stages/integrate", headers=H("ai"),
+                      json={"state": "paused"}).status_code == 422
+    assert client.put("/api/deployments/dep_harborview/stages/integrate", headers=H("customer"),
+                      json={"state": "done"}).status_code == 404
+    assert "stage.state" in [a["action"] for a in client.get("/api/audit", headers=H("head")).json()]
+
+
+def test_finishing_a_stage_ends_its_overrun_delay(client):
+    assert by_key(client, "dep_castellan:stage_overrun:golive")["open"]
+    client.put("/api/deployments/dep_castellan/stages/golive", headers=H("fde"), json={"state": "done"})
+    assert not by_key(client, "dep_castellan:stage_overrun:golive")["open"]
+    row, _ = stages_of(client, "dep_castellan")
+    assert row["stage"] == "adopt"
+
+
+def test_hold_pauses_the_clock_and_records_a_delay(client):
+    row, st = stages_of(client, "dep_redline")
+    assert row["status"] == "on_hold" and row["on_hold"]["reason"].startswith("Customer reorg")
+    assert row["cells"][0]["state"] == "hold"
+    assert st["discover"]["days"] <= 3.1  # six days in discover, three of them on hold
+    hold = by_key(client, "hold:dep_redline")
+    assert hold["proposed_owner"] == "customer" and hold["open"]
+    assert client.post("/api/deployments/dep_redline/hold", headers=H("head"), json={"on": False}).status_code == 200
+    assert not by_key(client, "hold:dep_redline")["open"]
+    r = client.post("/api/deployments/dep_harborview/hold", headers=H("em"),
+                    json={"on": True, "reason": "Payer contract renewal", "waiting_on": "software_vendor"})
+    assert r.status_code == 200
+    assert by_key(client, "hold:dep_harborview")["proposed_owner"] == "software_vendor"
+    assert client.post("/api/deployments/dep_northfield/hold", headers=H("customer"), json={"on": True}).status_code == 403
+    # On hold, no stage runs past its target.
+    client.post("/api/sweep", headers=H("head"))
+    keys = {f["rule_key"] for f in client.get("/api/flags?deployment_id=dep_harborview", headers=H("head")).json()}
+    assert not any(k and k.startswith("stage_overrun") for k in keys)
+
+
+def test_blocked_is_a_label_with_an_optional_who(client):
+    # Blocking without saying who: fine.
+    assert client.patch("/api/tasks/tsk_001", headers=H("fde"), json={"status": "blocked"}).status_code == 200
+    # Saying who later updates the proposal, and the task is still fully workable.
+    r = client.patch("/api/tasks/tsk_001", headers=H("fde"),
+                     json={"waiting_on": "model_vendor", "blocked_reason": "Rate limits on the eval run"})
+    assert r.status_code == 200
+    d = by_key(client, "task:tsk_001")
+    assert d["proposed_owner"] == "model_vendor" and d["proposed_reason"] == "Rate limits on the eval run"
+    assert "said by the person" in d["proposal_basis"]
+    assert client.patch("/api/tasks/tsk_001", headers=H("fde"), json={"status": "done"}).status_code == 200
+    # Saying it in the same step also works.
+    client.patch("/api/tasks/tsk_009", headers=H("fde"), json={"status": "blocked", "waiting_on": "customer"})
+    assert by_key(client, "task:tsk_009")["proposed_owner"] == "customer"
+    assert client.patch("/api/tasks/tsk_009", headers=H("fde"), json={"waiting_on": "aliens"}).status_code == 422
+
+
+def test_log_today_in_one_click(client):
+    w = client.get("/api/me/week", headers=H("fde")).json()
+    r = client.post("/api/time/today", headers=H("fde")).json()
+    assert r["hours"] > 0 and {x["deployment_id"] for x in r["logged"]} <= {"dep_northfield", "dep_castellan"}
+    again = client.post("/api/time/today", headers=H("fde")).json()
+    assert again["logged"] == []  # never doubles up
+    w2 = client.get("/api/me/week", headers=H("fde")).json()
+    assert w2["today"]["logged"] >= r["hours"] and w2["logged"] > w["logged"]
+    assert client.post("/api/time/today", headers=H("customer")).status_code == 403

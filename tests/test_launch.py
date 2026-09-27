@@ -333,9 +333,9 @@ def test_mcp_end_to_end(client):
     run = rpc(client, pat, "tools/call", {"name": "run_engine", "arguments": {
         "deployment_id": "dep_castellan", "engine": "conformance", "input": SAMPLE_INPUTS["conformance"]}}).json()["result"]
     assert not run["isError"] and "critical" in run["content"][0]["text"]
-    # Her permissions, not more: FDEs can't jump stages or see Harborview.
-    jump = rpc(client, pat, "tools/call", {"name": "advance_deployment", "arguments": {
-        "deployment_id": "dep_northfield", "to_stage": "discover", "note": "x"}}).json()["result"]
+    # Her permissions, not more: FDEs can't assign work to others or see Harborview.
+    jump = rpc(client, pat, "tools/call", {"name": "create_task", "arguments": {
+        "deployment_id": "dep_northfield", "title": "x", "assignee_id": "usr_sam"}}).json()["result"]
     assert jump["isError"] and "can't" in jump["content"][0]["text"]
     hidden = rpc(client, pat, "tools/call", {"name": "get_deployment", "arguments": {"deployment_id": "dep_harborview"}}).json()["result"]
     assert hidden["isError"]

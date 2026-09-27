@@ -116,6 +116,19 @@ h3{margin:0;font-size:14px;font-weight:600}
 .cell{height:10px;border-radius:3px;background:var(--pending)}
 .cell.done{background:var(--good)} .cell.progress{background:var(--warn)} .cell.stalled{background:var(--bad)}
 .cells.sm .cell{height:8px;border-radius:2px}
+.cell.skipped{background:transparent;border:1px dashed var(--line4)} .cell.hold{background:var(--blue)}
+.step.skipped{opacity:.65} .step.skipped .bar{background:transparent;border-top:1px dashed var(--line4);height:0;margin-top:10px}
+.step.hold{border-color:var(--blue);background:var(--bluebg)} .step.hold .bar{background:var(--blue)}
+.seg{display:inline-flex;border:1px solid var(--line3);border-radius:7px;overflow:hidden;flex-wrap:wrap}
+.seg button{height:32px;padding:0 12px;border:0;border-right:1px solid var(--line3);background:transparent;color:var(--muted);font-size:12.5px}
+.seg button:last-child{border-right:0}
+.seg button:hover{color:var(--text);background:var(--panel2)}
+.seg button.on{color:var(--text);font-weight:600;background:var(--panel2)}
+.seg button.on.done{background:var(--goodbg);color:var(--good)} .seg button.on.in_progress{background:var(--warnbg);color:var(--warn)}
+.waiting{grid-column:2/-1;display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--muted);padding:0 0 6px}
+.chipbtn{height:26px;padding:0 10px;border-radius:13px;border:1px solid var(--line3);background:transparent;color:var(--text);font-size:12px}
+.chipbtn:hover{border-color:var(--accent);background:var(--selbg)}
+.holdbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;border-radius:10px;background:var(--bluebg);border:1px solid var(--blue);color:var(--text);font-size:13px}
 .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:11.5px;color:var(--muted)}
 .legend span{display:flex;align-items:center;gap:6px}
 .legend i{width:14px;height:6px;border-radius:2px;display:inline-block}
@@ -409,15 +422,17 @@ function globalNav() {
 
 function depNav(d, page) {
   const internal = d.you_can.includes("task.view_internal");
-  const keys = S.cfg.stages.map(s => s.key); const idx = keys.indexOf(d.stage);
   const back = `<button class="navitem back" data-on="${on(() => go(kind() === "customer" ? "home" : "chains"))}"><span class="l"><span class="t">← ${kind() === "customer" ? "Home" : "All deployments"}</span></span></button>`;
   const item = (key, label, src, n, extra = "") => `<button class="navitem ${page === key ? "on" : ""}" data-on="${on(() => go(`dep/${d.id}/${key}`))}"><span class="l"><span class="t">${esc(label)}${extra}</span><span class="s">${esc(src)}</span></span><span class="n">${n}</span></button>`;
   let h = back + item("overview", "Overview", internal ? "Tasks · team · plan" : "What's shared with you", "00");
   if (!internal) return h;
+  const st = Object.fromEntries(((d._row || {}).stages || []).map(x => [x.key, x]));
   S.cfg.stages.forEach((s, i) => {
-    const state = i < idx ? "good" : i === idx ? (d._stalled ? "bad" : "warn") : "";
+    const x = st[s.key] || {};
     const src = (s.engines || []).map(engName).join(" · ") || "No engine";
-    h += item(s.key, s.name, src, String(i + 1).padStart(2, "0"), i === idx ? ` <span class="xs mono ${state}">· now</span>` : i < idx ? ` <span class="xs good">✓</span>` : "");
+    const mark = x.state === "done" ? ` <span class="xs good">✓</span>` : x.state === "skipped" ? ` <span class="xs muted">· skipped</span>`
+      : x.state === "hold" ? ` <span class="xs mono blue">· paused</span>` : x.status === "in_progress" ? ` <span class="xs mono ${x.overrun ? "bad" : "warn"}">· now</span>` : "";
+    h += item(s.key, s.name, src, String(i + 1).padStart(2, "0"), mark);
   });
   if (d.you_can.includes("bench.match")) h += item("bench", "Bench", "Threshold", String(S.cfg.stages.length + 1).padStart(2, "0"));
   return h;
@@ -476,10 +491,11 @@ async function refreshBadges() {
 const invalidate = () => { S.cache.badgesAt = 0; };
 
 /* ======================================================= shared pieces */
-const CELL_CLASS = { done: "done", progress: "progress", stalled: "stalled", pending: "" };
-function cells(list, sm) { return `<div class="cells ${sm ? "sm" : ""}" style="grid-template-columns:repeat(${list.length},minmax(0,1fr))">${list.map(c => `<div class="cell ${CELL_CLASS[c.state]}" title="${esc(c.name)} · ${esc(c.state === "progress" ? "in progress" : c.state === "stalled" ? "stalled past target" : c.state === "pending" ? "not started" : "done")}"></div>`).join("")}</div>`; }
-const chainLegend = `<div class="legend"><span><i style="background:var(--good)"></i>done</span><span><i style="background:var(--warn)"></i>in progress</span><span><i style="background:var(--bad)"></i>stalled past target</span><span><i style="background:var(--pending)"></i>not started</span></div>`;
-const STATUS = { on_track: ["on track", "var(--good)"], at_risk: ["at risk", "var(--warn)"], off_track: ["off track", "var(--bad)"], blocked: ["blocked", "var(--bad)"] };
+const CELL_CLASS = { done: "done", progress: "progress", stalled: "stalled", pending: "", skipped: "skipped", hold: "hold" };
+const CELL_WORD = { done: "done", progress: "in progress", stalled: "past target", pending: "not started", skipped: "skipped", hold: "on hold" };
+function cells(list, sm) { return `<div class="cells ${sm ? "sm" : ""}" style="grid-template-columns:repeat(${list.length},minmax(0,1fr))">${list.map(c => `<div class="cell ${CELL_CLASS[c.state]}" title="${esc(c.name)} · ${esc(CELL_WORD[c.state] || c.state)}"></div>`).join("")}</div>`; }
+const chainLegend = `<div class="legend"><span><i style="background:var(--good)"></i>done</span><span><i style="background:var(--warn)"></i>in progress</span><span><i style="background:var(--bad)"></i>past target</span><span><i style="background:var(--blue)"></i>on hold</span><span><i style="border:1px dashed var(--line4)"></i>skipped</span><span><i style="background:var(--pending)"></i>not started</span></div>`;
+const STATUS = { on_hold: ["on hold", "var(--blue)"], on_track: ["on track", "var(--good)"], at_risk: ["at risk", "var(--warn)"], off_track: ["off track", "var(--bad)"], blocked: ["blocked", "var(--bad)"] };
 const statusDot = s => { const [l, c] = STATUS[s] || [s, "var(--muted)"]; return `<span class="status"><span class="sdot" style="background:${c}"></span>${esc(l)}</span>`; };
 const sevChip = s => `<span class="chip ${s === "high" ? "bad" : s === "med" ? "warn" : ""}">${esc(upper(s === "med" ? "medium" : s))}</span>`;
 const stageChip = (row) => `<span class="chip ${row.overrun ? "bad" : "warn"}">${esc(upper(row.stage_name || stageName(row.stage)))}</span>`;
@@ -496,8 +512,12 @@ function taskRow(t, { showDep = true, reload, updateAny = false, showShared = tr
   const due = t.due ? daysFrom(t.due) : null;
   const dueCls = due != null && due < 0 && !done ? "bad" : due != null && due <= 2 && !done ? "warn" : "";
   const toggle = on(async () => { await api(`/api/tasks/${t.id}`, { method: "PATCH", body: { status: done ? "open" : "done" } }); invalidate(); reload(); });
-  const setStatus = on(async el => { await api(`/api/tasks/${t.id}`, { method: "PATCH", body: { status: el.value } }); invalidate(); toast(el.value === "blocked" ? "Marked blocked. A delay was opened for someone to confirm." : "Task updated"); reload(); });
+  const setStatus = on(async el => { await api(`/api/tasks/${t.id}`, { method: "PATCH", body: { status: el.value } }); invalidate(); toast(el.value === "blocked" ? "Marked blocked. Say who it's waiting on if you know; work carries on either way." : el.value === "done" ? "Done ✓" : "Task updated"); reload(); });
   const link = links && links[t.id];
+  const WHO = { customer: "Customer", team: S.me.tenant.name, model_vendor: "Model vendor", software_vendor: "Software vendor" };
+  const waiting = t.status === "blocked" && can("task.view_internal") ? (t.waiting_on
+    ? `<div class="waiting">Waiting on <b style="color:var(--text)">${esc(WHO[t.waiting_on] || t.waiting_on)}</b>${t.blocked_reason ? ` · ${esc(t.blocked_reason)}` : ""}${editable ? ` <button class="linkbtn xs" data-on="${on(async () => { await api(`/api/tasks/${t.id}`, { method: "PATCH", body: { waiting_on: "" } }); reload(); })}">change</button>` : ""}</div>`
+    : editable ? `<div class="waiting">Waiting on? ${Object.entries(WHO).map(([k, l]) => `<button class="chipbtn" data-on="${on(async () => { await api(`/api/tasks/${t.id}`, { method: "PATCH", body: { waiting_on: k } }); toast(`Noted: waiting on ${l}`); reload(); })}">${esc(l)}</button>`).join("")}<span class="xs">optional</span></div>` : "") : "";
   return `<div class="task">
     <button class="box ${done ? "on" : t.status === "blocked" ? "blocked" : ""}" ${editable ? `data-on="${toggle}"` : "disabled"} aria-label="${done ? "Reopen" : "Mark done"}: ${esc(t.title)}">${done ? "✓" : t.status === "blocked" ? "!" : ""}</button>
     <div class="ttl ${done ? "done" : ""}">${esc(t.title)}
@@ -509,7 +529,7 @@ function taskRow(t, { showDep = true, reload, updateAny = false, showShared = tr
       <span class="mono xs">${esc(upper(stageName(t.stage)))}</span>
       ${t.due ? `<span class="mono xs ${dueCls}">${fmtDate(t.due)}</span>` : ""}
       ${editable && !done ? `<select data-chg="${setStatus}" aria-label="Status of ${esc(t.title)}">${["open", "in_progress", "blocked", "done"].map(s => `<option value="${s}" ${s === t.status ? "selected" : ""}>${s.replace("_", " ")}</option>`).join("")}</select>` : done ? "" : `<span class="chip">${esc(t.status.replace("_", " "))}</span>`}
-    </div></div>`;
+    </div>${waiting}</div>`;
 }
 
 /* ============================================================ home */
@@ -584,7 +604,7 @@ const WIDGETS = {
     const stalledCust = p.deployments.filter(d => d.overrun && d.delay && d.delay.owner === "customer").length;
     const roll = p.delays || {};
     return `<div class="grid g4">
-      ${kpi("Active deployments", k.active_deployments, `${k.off_track} off track · ${k.at_risk} at risk`)}
+      ${kpi("Active deployments", k.active_deployments, `${k.off_track} off track · ${k.at_risk} at risk${k.on_hold ? ` · ${k.on_hold} on hold` : ""}`)}
       ${kpi(`Median days to ${stageName(k.live_stage || "").toLowerCase()}`, k.median_days_to_live ?? "—", k.days_to_live_target ? `target ${k.days_to_live_target}, from your stage targets` : "")}
       ${kpi("Stalled past target", stalled, stalled ? (stalledCust ? `${stalledCust} waiting on the customer` : "none waiting on the customer") : "every stage within target", stalled ? "alert" : "", stalled ? "bad" : "")}
       ${kpi("Confirmed delay rows", roll.confirmed_rows ?? 0, roll.unconfirmed_rows ? `${roll.unconfirmed_rows} waiting for someone to confirm` : "the ledger that compounds")}
@@ -613,8 +633,9 @@ const WIDGETS = {
     const row = (title, sub, dep, right) => `<div class="task" style="grid-template-columns:minmax(0,1fr) auto"><div class="ttl">${dep ? `<a href="#/dep/${esc(dep)}">${esc(title)}</a>` : esc(title)}<div class="small muted">${esc(sub)}</div></div><div class="meta">${right || ""}</div></div>`;
     const blocks = [];
     if (t.confirm.length) blocks.push(`<div class="label" style="margin-top:4px">Waiting for your confirmation</div>${t.confirm.slice(0, 5).map(x => row(x.title, x.deployment, x.deployment_id, `<span class="chip purple">${esc(engName(x.engine))}</span>`)).join("")}`);
-    if (t.due.length) blocks.push(`<div class="label" style="margin-top:4px">Due soon${t.overdue ? ` · <span class="bad">${t.overdue} overdue</span>` : ""}</div>${t.due.slice(0, 5).map(x => row(x.title, x.deployment, x.deployment_id, `<span class="mono xs">${fmtDate(x.due)}</span>`)).join("")}`);
-    if (t.new.length) blocks.push(`<div class="label" style="margin-top:4px">New for you</div>${t.new.slice(0, 4).map(x => row(x.title, x.deployment, x.deployment_id)).join("")}`);
+    const dup = (S.me.home || []).includes("my_tasks");  // don't repeat what My tasks already shows
+    if (t.due.length && !dup) blocks.push(`<div class="label" style="margin-top:4px">Due soon${t.overdue ? ` · <span class="bad">${t.overdue} overdue</span>` : ""}</div>${t.due.slice(0, 5).map(x => row(x.title, x.deployment, x.deployment_id, `<span class="mono xs">${fmtDate(x.due)}</span>`)).join("")}`);
+    if (t.new.length && !dup) blocks.push(`<div class="label" style="margin-top:4px">New for you</div>${t.new.slice(0, 4).map(x => row(x.title, x.deployment, x.deployment_id)).join("")}`);
     if (t.moved.length) blocks.push(`<div class="label" style="margin-top:4px">Moved in the last two days</div>${t.moved.slice(0, 4).map(x => row(`${x.deployment} → ${stageName(x.to_stage)}`, x.actor, x.deployment_id)).join("")}`);
     if (!blocks.length) return "";
     return `<div class="panel"><div class="label">Today</div>${blocks.join("")}</div>`;
@@ -638,7 +659,8 @@ const WIDGETS = {
         <div class="row" style="margin-top:4px"><a class="btn primary" href="#/dep/${esc(cust.deployment_id)}">Open deployment</a>${can("deployment.edit") ? `<button class="btn" data-on="${esc_}">Escalate to lead</button>` : ""}</div></div>` : ""}
       <div class="panel" style="flex-direction:row;justify-content:space-between;align-items:flex-start">
         <div><div class="label">This week</div><div style="font-size:26px;font-weight:600;margin-top:4px">${num(w.logged)} h</div>
-          <div class="small muted">${w.planned ? `planned ${num(w.planned)} of ${num(w.available)} h` : `${num(w.available)} h available`}</div></div>
+          <div class="small muted">${w.planned ? `planned ${num(w.planned)} of ${num(w.available)} h` : `${num(w.available)} h available`}</div>
+        ${logTodayBtn(w)}</div>
         <div style="text-align:right;font-size:12.5px;color:var(--muted);line-height:1.7">${w.by_deployment.length ? w.by_deployment.map(x => `${esc((x.deployment || "Internal").split(" ").slice(0, 3).join(" "))} ${num(x.hours)} h`).join("<br>") : "No time logged yet"}<br><a href="#/work">Log time →</a></div></div>
     </div>`;
   },
@@ -666,6 +688,13 @@ const WIDGETS = {
       ${t.map(p => `<tr><td>${esc(p.name)}</td><td class="muted">${esc(p.role_name)}</td><td class="mono">${p.deployments}</td><td class="mono">${p.open_tasks}</td></tr>`).join("")}</tbody></table></div>`;
   },
 };
+function logTodayBtn(w) {
+  const t = w.today || {};
+  if (t.logged) return `<div class="small good" style="margin-top:8px">✓ ${num(t.logged)} h logged today</div>`;
+  if (!t.planned) return "";
+  const go_ = on(async () => { const r = await api("/api/time/today", { method: "POST" }); toast(r.hours ? `Logged ${num(r.hours)} h across ${plural(r.logged.length, "deployment")}` : "Already logged"); route(); });
+  return `<button class="btn primary sm" style="margin-top:10px" data-on="${go_}">Log today · ${num(t.planned)} h as planned</button>`;
+}
 function stageForEngine(e) { const s = S.cfg.stages.find(s => (s.engines || []).includes(e)); return s ? s.key : e === "threshold" ? "bench" : "overview"; }
 </script>
 <script>
@@ -999,6 +1028,7 @@ async function workView() {
     await api("/api/time", { method: "POST", body: { day: val("tm_d"), hours: +val("tm_h"), deployment_id: val("tm_dep") || null } });
     toast("Time logged"); reload();
   });
+  const quick = logTodayBtn(w);
   const mine = p.deployments;
   const days = [...Array(7)].map((_, i) => { const d = parseDay(w.week); d.setDate(d.getDate() + i); const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; return { iso, label: DOW[d.getDay()], h: (w.by_day.find(x => x.day === iso) || {}).hours || 0 }; });
   const maxH = Math.max(8, ...days.map(d => d.h));
@@ -1008,9 +1038,10 @@ async function workView() {
         ${done.length ? `<details style="margin-top:10px"><summary>${plural(done.length, "done task")}</summary>${done.slice(0, 30).map(t => taskRow(t, { reload })).join("")}</details>` : ""}</div>
       <div class="stack lg">
         <div class="panel"><div class="phead"><div class="label">This week · ${num(w.logged)} h logged</div><span class="mono xs muted">planned ${num(w.planned)} of ${num(w.available)}</span></div>
+          ${quick}
           <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px;align-items:end;height:110px">${days.map(d => `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end"><span class="mono xs muted">${d.h ? num(d.h) : ""}</span><div style="width:100%;border-radius:4px 4px 2px 2px;background:${d.iso === todayIso() ? "var(--accent)" : "var(--good)"};height:${Math.round(70 * d.h / maxH)}px;min-height:${d.h ? 3 : 0}px"></div><span class="mono xs ${d.iso === todayIso() ? "warn" : "muted"}">${d.label}</span></div>`).join("")}</div>
           ${w.allocations.length ? `<div class="small muted">${w.allocations.map(a => `${esc(a.deployment)} ${pct(a.allocation)} (${num(a.hours)} h)`).join(" · ")}</div>` : ""}</div>
-        <div class="panel"><div class="label">Log time</div><div class="formgrid">
+        <div class="panel"><div class="label">Log something different</div><div class="formgrid">
           <label class="field"><span>Day</span><input id="tm_d" type="date" value="${todayIso()}"></label>
           <label class="field"><span>Hours</span><input id="tm_h" type="number" step="0.25" min="0.25" max="24" value="1"></label>
           <label class="field"><span>Deployment</span><select id="tm_dep"><option value="">Internal / other</option>${mine.map(d => `<option value="${esc(d.id)}">${esc(d.customer)} · ${esc(d.name)}</option>`).join("")}</select></label>
@@ -1037,27 +1068,57 @@ async function depView(id, pg = "overview") {
 }
 
 function stepper(d, row) {
-  const keys = S.cfg.stages.map(s => s.key); const idx = keys.indexOf(d.stage);
   const internal = d.you_can.includes("task.view_internal");
-  return `<div class="stepper" style="grid-template-columns:repeat(${keys.length},minmax(0,1fr))">${S.cfg.stages.map((s, i) => {
-    const st = i < idx ? "done" : i === idx ? (row.overrun ? "stalled" : "progress") : "";
-    const sub = i === idx ? (internal ? `${row.days_in_stage} of ${s.target_days} d` : `${row.days_in_stage} d in stage`) : i < idx ? "done" : internal ? `${s.target_days} d target` : "next";
-    return `<a class="step ${st}" ${internal ? `href="#/dep/${esc(d.id)}/${esc(s.key)}"` : ""} style="text-decoration:none;color:inherit"><div class="k">${String(i + 1).padStart(2, "0")} · ${esc(sub.toUpperCase())}</div><div class="nm">${esc(s.name)}</div><div class="bar"></div></a>`;
+  const st = Object.fromEntries((row.stages || []).map(x => [x.key, x]));
+  return `<div class="stepper" style="grid-template-columns:repeat(${S.cfg.stages.length},minmax(0,1fr))">${S.cfg.stages.map((s, i) => {
+    const x = st[s.key] || { state: "pending" };
+    const cls = { done: "done", progress: "progress", stalled: "stalled", hold: "hold", skipped: "skipped" }[x.state] || "";
+    let sub;
+    if (x.state === "done") sub = x.days != null ? `done · ${x.days} d` : "done";
+    else if (x.state === "skipped") sub = "skipped";
+    else if (x.state === "hold") sub = `paused · ${x.days} d`;
+    else if (x.status === "in_progress") sub = internal && x.target_days ? `${x.days} of ${x.target_days} d` : `${x.days} d`;
+    else sub = internal ? `${s.target_days} d target` : "not started";
+    return `<a class="step ${cls}" ${internal ? `href="#/dep/${esc(d.id)}/${esc(s.key)}"` : ""} style="text-decoration:none;color:inherit"><div class="k">${String(i + 1).padStart(2, "0")} · ${esc(sub.toUpperCase())}</div><div class="nm">${esc(s.name)}</div><div class="bar"></div></a>`;
   }).join("")}</div>`;
 }
 
+/* The one move people make most: finish what's in progress here and start the next stage.
+   Anything else (back, skip ahead) is a pick from the list, no note required. */
 function moverHtml(d) {
   const keys = S.cfg.stages.map(s => s.key); const idx = keys.indexOf(d.stage); const next = keys[idx + 1];
   const yc = a => d.you_can.includes(a);
-  const move = on(async () => {
-    const to = val("advto") || next;
-    await api(`/api/deployments/${d.id}/advance`, { method: "POST", body: { to_stage: to, note: val("advnote") || "" } });
-    invalidate(); toast(`Moved to ${stageName(to)}`); route();
-  });
-  if (yc("deployment.jump")) return `<div class="row"><select id="advto" aria-label="Move to stage">${S.cfg.stages.map(s => `<option value="${esc(s.key)}" ${s.key === next ? "selected" : ""} ${s.key === d.stage ? "disabled" : ""}>${esc(s.name)}</option>`).join("")}</select>
-    <input id="advnote" placeholder="Note (needed to move back)" style="min-width:200px"><button class="btn primary" data-on="${move}">Move</button></div>`;
-  if (yc("deployment.advance") && next) return `<button class="btn primary" data-on="${move}">Advance to ${esc(stageName(next))}</button>`;
+  if (!yc("deployment.advance")) return "";
+  const move = async to => {
+    await api(`/api/deployments/${d.id}/advance`, { method: "POST", body: { to_stage: to } });
+    invalidate(); toast(keys.indexOf(to) > idx ? `${stageName(d.stage)} done. On to ${stageName(to)}.` : `Back to ${stageName(to)}`); route();
+  };
+  const nextBtn = next ? `<button class="btn primary" data-on="${on(() => move(next))}">${esc(stageName(d.stage))} done → ${esc(stageName(next))}</button>` : "";
+  const pick = yc("deployment.jump") ? `<select aria-label="Move to another stage" data-chg="${on(el => { if (el.value) move(el.value); })}" style="width:auto"><option value="">Move to…</option>${S.cfg.stages.filter(s => s.key !== d.stage).map(s => `<option value="${esc(s.key)}">${esc(s.name)}</option>`).join("")}</select>` : "";
+  return `<div class="row">${nextBtn}${pick}</div>`;
+}
+
+function holdHtml(d, row) {
+  if (!d.you_can.includes("deployment.edit")) return row.on_hold ? `<div class="holdbar"><b>On hold</b> for ${plural(Math.round(row.on_hold.days), "day")}${row.on_hold.reason ? ` · ${esc(row.on_hold.reason)}` : ""}</div>` : "";
+  if (row.on_hold) {
+    const resume = on(async () => { await api(`/api/deployments/${d.id}/hold`, { method: "POST", body: { on: false } }); invalidate(); toast("Resumed. The clock is running again."); route(); });
+    return `<div class="holdbar"><b>On hold</b><span>for ${plural(Math.round(row.on_hold.days), "day")}${row.on_hold.reason ? ` · ${esc(row.on_hold.reason)}` : ""}</span><span class="small muted">The stage clock is paused; the time is on the delay ledger.</span><div class="spacer"></div><button class="btn primary sm" data-on="${resume}">Resume</button></div>`;
+  }
   return "";
+}
+function pauseBtn(d, row) {
+  if (!d.you_can.includes("deployment.edit") || row.on_hold) return "";
+  const open = on(() => { const el = $("#holdform"); el.style.display = el.style.display === "none" ? "" : "none"; });
+  return `<button class="btn sm" data-on="${open}">Pause</button>`;
+}
+function holdForm(d) {
+  const WHO = { customer: "Customer", team: S.me.tenant.name, model_vendor: "Model vendor", software_vendor: "Software vendor" };
+  const put = who => on(async () => {
+    await api(`/api/deployments/${d.id}/hold`, { method: "POST", body: { on: true, reason: val("hold_r") || "", waiting_on: who } });
+    invalidate(); toast("Paused. The stage clock stops until you resume."); route();
+  });
+  return `<div id="holdform" style="display:none" class="panel"><div class="row nowrap"><input id="hold_r" placeholder="Why, if you want to say (optional)" style="flex:1"></div>
+    <div class="row small muted">Waiting on ${Object.entries(WHO).map(([k, l]) => `<button class="chipbtn" data-on="${put(k)}">${esc(l)}</button>`).join("")}<button class="chipbtn" data-on="${put(null)}">Not sure</button></div></div>`;
 }
 
 async function depOverview(d, row, reload) {
@@ -1097,7 +1158,8 @@ async function depOverview(d, row, reload) {
   const labels = { customer: "Customer", team: S.me.tenant.name, model_vendor: "Model vendor", software_vendor: "Software vendor" };
 
   page(`<div class="headrow"><div><div class="label">${esc(d.customer)}</div><h1 style="margin-top:4px">${esc(d.name)}</h1></div>
-      <div class="row">${yc("deployment.edit") ? `<span class="label">Health</span><select data-chg="${health}" aria-label="Health">${["on_track", "at_risk", "blocked"].map(h => `<option value="${h}" ${h === d.health ? "selected" : ""}>${h.replace("_", " ")}</option>`).join("")}</select>` : ""}<span class="label" title="Health you set, plus open flags">Status</span>${statusDot(row.status || d.health)}</div></div>
+      <div class="row">${pauseBtn(d, row)}${yc("deployment.edit") ? `<span class="label">Health</span><select data-chg="${health}" aria-label="Health">${["on_track", "at_risk", "blocked"].map(h => `<option value="${h}" ${h === d.health ? "selected" : ""}>${h.replace("_", " ")}</option>`).join("")}</select>` : ""}<span class="label" title="Health you set, plus open flags">Status</span>${statusDot(row.status || d.health)}</div></div>
+    ${holdForm(d)}${holdHtml(d, row)}
     ${stepper(d, row)}
     <div class="panel" style="flex-direction:row;align-items:center;flex-wrap:wrap;gap:16px"><div style="flex:1;min-width:260px"><div class="label">Exit criteria · ${esc(stage.name)}</div><div style="margin-top:4px">${esc(stage.exit_criteria || "None set")}</div></div>${moverHtml(d)}</div>
     <div class="grid g4">
@@ -1208,15 +1270,24 @@ async function stagePage(d, row, key, reload) {
   const runs = findings.filter(f => f.engine === current);
   const latest = runs[0];
   const keys = S.cfg.stages.map(s => s.key); const here = keys.indexOf(d.stage), me = keys.indexOf(key);
-  const where = me < here ? `<span class="chip good">DONE</span>` : me === here ? `<span class="chip ${row.overrun ? "bad" : "warn"}">NOW · ${row.days_in_stage} OF ${stage.target_days} D</span>` : `<span class="chip">NOT STARTED</span>`;
+  const sx = (row.stages || []).find(x => x.key === key) || { status: "not_started" };
+  const setState = st => on(async () => {
+    await api(`/api/deployments/${d.id}/stages/${key}`, { method: "PUT", body: { state: st } });
+    invalidate(); toast(st === "done" ? `${stage.name} done ✓` : st === "in_progress" ? `${stage.name} in progress` : st === "skipped" ? `${stage.name} skipped` : `${stage.name} reset`); route();
+  });
+  const LBL = { not_started: "Not started", in_progress: "In progress", done: "Done", skipped: "Skipped" };
+  const where = yc("deployment.advance")
+    ? `<div class="seg" role="group" aria-label="${esc(stage.name)} state">${Object.entries(LBL).map(([k, l]) => `<button class="${sx.status === k ? "on " + k : ""}" aria-pressed="${sx.status === k}" data-on="${setState(k)}">${l}</button>`).join("")}</div>
+       ${sx.days != null && sx.status !== "not_started" ? `<span class="mono small ${sx.overrun ? "bad" : "muted"}">${sx.days} d${sx.target_days ? ` of ${sx.target_days}` : ""}${sx.state === "hold" ? " · paused" : ""}</span>` : ""}`
+    : `<span class="chip">${esc(upper(LBL[sx.status] || sx.status))}</span>`;
   const extras = [];
   if (list.includes("golive") || key === "golive") extras.push(await checklistPanel(d, reload));
   if (list.includes("cortex")) extras.push(approvalsPanel(await api(`/api/approvals?status=all&deployment_id=${encodeURIComponent(d.id)}`), reload));
   if (list.includes("value_study") || list.includes("attribution")) extras.push(await depDelaysPanel(d, reload));
   const stageTasks = tasks.filter(t => t.stage === key);
-  page(`<div class="headrow"><div><div class="row">${where}</div><h1 style="margin-top:8px">${esc(stage.name)}${eng ? ` · ${esc(eng.name)}` : ""}</h1>
+  page(`<div class="headrow"><div><div class="row">${where}</div><h1 style="margin-top:12px">${esc(stage.name)}${eng ? ` · ${esc(eng.name)}` : ""}</h1>
       <p class="lede">${esc(eng ? eng.does : "")}${stage.exit_criteria ? `<br><span class="text2">Exit: ${esc(stage.exit_criteria)}</span>` : ""}</p></div>
-      ${me === here ? moverHtml(d) : ""}</div>
+      </div>
     ${list.length > 1 ? `<div class="tabs" role="tablist">${list.map(k => `<button role="tab" aria-selected="${k === current}" class="tab ${k === current ? "on" : ""}" data-on="${on(() => { S[tabKey] = k; route(); })}">${esc(S.engines[k].name)}</button>`).join("")}</div>` : ""}
     ${!eng ? `<div class="empty">No engine on this stage. Add one in Settings → Deployment chain.</div>` :
       latest ? `${resultHero(current, latest.result, false, latest)}` : `<div class="empty">No ${esc(eng.name)} results on this deployment yet.${yc("engine.run") && eng.kind !== "push" ? " Run it below." : ""}</div>`}
@@ -1327,7 +1398,7 @@ function resultHero(engine, r, compact, f) {
     return `${head}<div class="grid g3">
       ${kpi("Pass rate", `${pct(x.pass_rate)}`, `against a ${pct(x.threshold)} bar`, "", x.pass_rate >= x.threshold ? "good" : "bad")}
       ${kpi("Critical misses", x.critical_failures.length, x.critical_failures.join(", ") || "none", x.critical_failures.length ? "alert" : "", x.critical_failures.length ? "bad" : "")}
-      ${kpi("Go-live gate", gate ? "Held" : "Open", gate ? (x.critical_failures.length ? "a critical case fails" : "below the bar") : "suite is green", gate ? "alert" : "", gate ? "bad" : "good")}</div>
+      ${kpi("Against the bar", gate ? "Below" : "Clear", gate ? (x.critical_failures.length ? "a critical case fails · advisory, nothing is held" : "below the bar · advisory") : "suite is green", gate ? "alert" : "", gate ? "bad" : "good")}</div>
       ${compact ? "" : `<div class="panel flush"><table class="tbl"><thead><tr><th>Category</th><th>Passed</th><th>Rate</th><th>Failures</th></tr></thead><tbody>
       ${Object.entries(x.by_category).map(([k, v]) => `<tr><td class="nm">${esc(k)}</td><td class="mono">${v.passed}/${v.total}</td><td class="mono ${v.rate >= x.threshold ? "good" : "bad"}">${pct(v.rate)}</td><td class="small text2">${x.failures.filter(ff => ff.category === k).map(ff => `${esc(ff.case_id)}: expected “${esc(ff.expected)}”, got “${esc(ff.actual)}”${ff.critical ? ` <span class="bad">critical</span>` : ""}`).join("<br>") || "—"}</td></tr>`).join("")}</tbody></table></div>`}`;
   }
@@ -1377,7 +1448,7 @@ async function benchPage(d, reload) {
   const save = on(async () => { await api(`/api/deployments/${d.id}`, { method: "PATCH", body: { staffing_req: val("th_req") } }); toast("Requirements saved"); });
   const match = on(async el => { el.disabled = true; try { await api(`/api/deployments/${d.id}/engines/threshold`, { method: "POST" }); toast("Scored. Saved as a finding."); reload(); } finally { el.disabled = false; } });
   const V = { apply: "good", arguable: "warn", open_question: "blue", blocked: "bad" };
-  const VL = { apply: "Can staff", arguable: "Arguable", open_question: "Open question", blocked: "Blocked" };
+  const VL = { apply: "Can staff", arguable: "Arguable", open_question: "Open question", blocked: "Gap on a must-have" };
   const short = t => { const x = t.replace(/^(\d+\+? years? of |experience (with|integrating with|in) |willing to |background in |working knowledge of )/i, ""); return x.length > 26 ? x.slice(0, 25) + "…" : x; };
   page(`<div class="headrow"><div><h1>Bench · who's on it</h1><p class="lede">Threshold scores people against what this deployment actually needs. Every requirement is met by cited work or it isn't; a resume line alone doesn't count, and nothing it can't see is inferred.</p></div>
       <button class="btn primary" data-on="${match}">Match the bench</button></div>

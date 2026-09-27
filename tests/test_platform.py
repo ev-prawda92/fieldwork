@@ -49,12 +49,17 @@ def test_engagement_manager_powers_are_scoped_to_own_engagements(client):
     assert r.status_code == 200
 
 
-def test_doers_advance_one_stage_only(client):
-    r = client.post("/api/deployments/dep_northfield/advance", headers=H("fde"),
-                    json={"to_stage": "discover", "note": "redo"})
-    assert r.status_code == 403
+def test_staffed_people_move_stages_either_way(client):
+    r = client.post("/api/deployments/dep_northfield/advance", headers=H("fde"), json={"to_stage": "discover"})
+    assert r.status_code == 200  # back, no note needed
     assert client.post("/api/deployments/dep_northfield/advance", headers=H("fde"),
                        json={"to_stage": "value"}).status_code == 200
+    # A workspace can still choose to restrict it.
+    c = client.get("/api/config", headers=H("head")).json()["config"]
+    c["permissions"]["deployment.jump"].pop("fde")
+    assert client.put("/api/config", headers=H("head"), json=c).status_code == 200
+    assert client.post("/api/deployments/dep_northfield/advance", headers=H("fde"),
+                       json={"to_stage": "discover"}).status_code == 403
 
 
 def test_doers_cannot_assign_or_update_others_tasks(client):
@@ -75,12 +80,12 @@ def test_customer_stakeholder_is_read_only(client):
     assert client.get("/api/audit", headers=H("customer")).status_code == 403
 
 
-def test_backward_move_needs_note(client):
-    r = client.post("/api/deployments/dep_castellan/advance", headers=H("head"), json={"to_stage": "integrate"})
-    assert r.status_code == 422
+def test_moving_back_keeps_the_note_when_given(client):
     r = client.post("/api/deployments/dep_castellan/advance", headers=H("head"),
                     json={"to_stage": "integrate", "note": "security review reopened scopes"})
     assert r.status_code == 200
+    hist = client.get("/api/deployments/dep_castellan", headers=H("head")).json()["history"]
+    assert hist[-1]["to_stage"] == "integrate" and hist[-1]["note"] == "security review reopened scopes"
 
 
 # ---------------------------------------------------- customization

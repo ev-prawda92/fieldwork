@@ -38,7 +38,7 @@ Hosted demos serve that engine themselves.
 **Deploy:** see [LAUNCH.md](LAUNCH.md): one-click Render blueprint (`render.yaml`), or `docker compose up` for Postgres locally.
 
 ```
-python -m pytest -q                                              # 103 tests on SQLite (197 with Postgres too)
+python -m pytest -q                                              # 108 tests on SQLite (207 with Postgres too)
 FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # plus the same tests on Postgres
 ```
 
@@ -46,6 +46,9 @@ FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # plus the same
 
 - **A home for each role.** Engineers see their deployments as cards, their tasks, what's blocked on the customer and their hours this week. Managers see capacity, unassigned work, flags and approvals. Directors see projects, the pipeline and the portfolio. Customers see only what's shared with them. Each workspace picks the sections per role. Light and dark mode.
 - **Chains.** Every deployment on one screen: the stage chain, days in stage against the stage's target, and who the current delay belongs to.
+- **Stages the way work actually happens.** Each stage is not started, in progress, done or skipped, and several can be in progress at once. Anyone staffed can move a deployment either way; a note is welcome, never required. Pause a deployment and the stage clock stops while the pause lands on the delay ledger.
+- **Nothing gates the work.** Blocked is a label, not a stop: say who it's waiting on if you know (one tap), and the delay ledger records it. Engine verdicts, flags and conformance are advisory. The tool keeps the record; people make the calls.
+- **One-tap time.** "Log today as planned" from home; adjust only when the day was different.
 - **Delay ledger.** A blocked task, a blocked tracker issue or a stage past its target opens a delay with a *proposed* owner: the customer, your team, the model vendor or a software vendor. A person confirms or reassigns it. Batch decisions count a quarter as much as one-at-a-time ones, and delays provable from the signal (a model provider rate-limiting you) settle by rule with no weight. Once a signal has enough confirmations, the proposal learns your workspace's pattern and says why.
 - **Flags.** Rules raise them on their own (stage past target, hours burning ahead of the calendar, a failed conformance gate, a task blocked more than 3 days) and clear them when the condition clears. People raise their own. A director can take one or hand it back to the team lead with a note.
 - **Capacity.** Weekly hours, allocations per deployment, logged time (entered or imported), roll-offs and unassigned work.

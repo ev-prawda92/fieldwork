@@ -305,6 +305,22 @@ CREATE TABLE IF NOT EXISTS checklist_items (
     created_at    TEXT NOT NULL
 )
 """),
+    (6, "stages that track their own state, on hold, waiting on", """
+CREATE TABLE IF NOT EXISTS deployment_stages (
+    deployment_id TEXT NOT NULL REFERENCES deployments(id),
+    tenant_id     TEXT NOT NULL,
+    stage         TEXT NOT NULL,
+    state         TEXT NOT NULL DEFAULT 'not_started',
+    entered_at    TEXT,
+    done_at       TEXT,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (deployment_id, stage)
+);
+ALTER TABLE deployments ADD COLUMN hold_since TEXT;
+ALTER TABLE deployments ADD COLUMN hold_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN waiting_on TEXT;
+ALTER TABLE tasks ADD COLUMN blocked_reason TEXT NOT NULL DEFAULT ''
+"""),
 ]
 
 _AUTO = {"sqlite": "INTEGER PRIMARY KEY AUTOINCREMENT", "postgres": "BIGSERIAL PRIMARY KEY"}
@@ -404,7 +420,7 @@ def init(conn: DB) -> None:
 
 def reset(conn: DB) -> None:
     """Drop everything. Used by `fieldwork seed` and tests; never by the API."""
-    tables = ["delays", "time_entries", "opportunities", "flags", "approvals", "checklist_items", "outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
+    tables = ["deployment_stages", "delays", "time_entries", "opportunities", "flags", "approvals", "checklist_items", "outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
               "tasks", "stage_events", "deployment_members", "deployments", "customers", "users",
               "tenants", "schema_migrations"]
     with conn.lock:
