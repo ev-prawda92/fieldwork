@@ -130,3 +130,7 @@ examples/engines/        a webhook engine and a push engine to copy from
 - AI drafting with each team's own model. Reports are deterministic today.
 - Native Harvest, Toggl, Salesforce and HubSpot sync (CSV import today), calendar time off, and email silence as a delay signal.
 - A connection pool, and IP pinning for outbound calls.
+
+## License
+
+[FSL-1.1-ALv2](LICENSE.md) (Functional Source License). Anyone can use, modify and self-host Fieldwork, including inside their own company, for any purpose except offering it to others as a competing product or service. Each version becomes Apache 2.0 two years after it's released. The vendored engine cores in `fieldwork/engines/` come from Evan Prawda's own repositories and are covered by the same license here.
