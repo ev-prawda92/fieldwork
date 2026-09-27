@@ -310,7 +310,8 @@ def seed(db_url) -> dict:
 
         for uid, name, role, tkey, prof in PEOPLE:
             tok = DEMO_TOKENS[tkey] if tkey else f"demo-{uid}-meridian"
-            ins("users", id=uid, tenant_id=T, name=name, email=f"{name.split()[0].lower()}@meridian.example",
+            domain = "northfieldsupply.example" if role == "customer" else "meridian.example"
+            ins("users", id=uid, tenant_id=T, name=name, email=f"{name.split()[0].lower()}@{domain}",
                 role=role, manager_id=None, token_hash=token_hash(tok), profile_json=json.dumps(prof),
                 created_at=ts)
         ins("users", id="usr_orb", tenant_id="ten_orbital", name="Ines Duarte", email="ines@orbital.example",
@@ -323,14 +324,16 @@ def seed(db_url) -> dict:
             token_hash=token_hash(DEMO_PUSH_TOKEN), created_at=ts)
 
         customers = [
-            ("cus_northfield", "Northfield Supply Co.", "Distribution", {"arr": 420000, "exec_sponsor": "CFO, R. Albrecht"}),
-            ("cus_harborview", "Harborview Health", "Healthcare", {"arr": 610000, "exec_sponsor": "CIO, T. Nakamura"}),
-            ("cus_castellan", "Castellan Mutual", "Insurance", {"arr": 380000}),
-            ("cus_redline", "Redline Logistics", "Logistics", {"arr": 150000}),
+            ("cus_northfield", "Northfield Supply Co.", "Distribution", {"arr": 420000, "exec_sponsor": "CFO, R. Albrecht"},
+             ""),
+            ("cus_harborview", "Harborview Health", "Healthcare", {"arr": 610000, "exec_sponsor": "CIO, T. Nakamura"},
+             "harborviewhealth.example"),
+            ("cus_castellan", "Castellan Mutual", "Insurance", {"arr": 380000}, "castellanmutual.example"),
+            ("cus_redline", "Redline Logistics", "Logistics", {"arr": 150000}, ""),
         ]
-        for cid, name, ind, fields in customers:
+        for cid, name, ind, fields, domains in customers:
             ins("customers", id=cid, tenant_id=T, name=name, industry=ind, fields_json=json.dumps(fields),
-                created_at=ts)
+                created_at=ts, domains=domains)
         ins("customers", id="cus_orb1", tenant_id="ten_orbital", name="Private Orbital Customer",
             industry="Aerospace", fields_json="{}", created_at=ts)
 

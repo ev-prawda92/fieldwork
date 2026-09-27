@@ -774,7 +774,8 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
             c.log("task.create", tid, {"deployment": body.deployment_id, "assignee": assignee,
                                        "title": body.title, "visibility": visibility})
             if a and assignee != c.uid:
-                emit(c, "task.assigned", body.deployment_id, title=body.title, assignee=a["name"])
+                emit(c, "task.assigned", body.deployment_id, title=body.title, assignee=a["name"], task_id=tid,
+                     assignee_id=assignee)
             trackers.queue_push(conn, c.tenant_id, c.cfg, dep, tid)
         return {"id": tid, "visibility": visibility}
 
@@ -843,11 +844,12 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
             title = t["title"]
             assignee_name = uname(changes.get("assignee_id", t["assignee_id"]))
             if changes.get("status") == "blocked" and t["status"] != "blocked":
-                emit(c, "task.blocked", t["deployment_id"], title=title, assignee=assignee_name)
+                emit(c, "task.blocked", t["deployment_id"], title=title, assignee=assignee_name, task_id=task_id)
             if changes.get("status") == "done" and t["status"] != "done":
-                emit(c, "task.done", t["deployment_id"], title=title)
+                emit(c, "task.done", t["deployment_id"], title=title, task_id=task_id)
             if "assignee_id" in changes and changes["assignee_id"] != t["assignee_id"]:
-                emit(c, "task.assigned", t["deployment_id"], title=title, assignee=assignee_name)
+                emit(c, "task.assigned", t["deployment_id"], title=title, assignee=assignee_name, task_id=task_id,
+                     assignee_id=changes["assignee_id"])
             if set(changes) & {"status", "title"}:
                 dep_row = conn.execute("SELECT * FROM deployments WHERE id=?", (t["deployment_id"],)).fetchone()
                 trackers.queue_push(conn, c.tenant_id, c.cfg, dep_row, task_id)
@@ -937,7 +939,7 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
                 summary = f"{result.get('classification')} ({result.get('confidence_pct')}% confidence)"
             elif engine == "threshold":
                 summary = f"{len(result.get('ranked', []))} people scored"
-            emit(c, "finding.created", dep_id, title=title, summary=summary or "",
+            emit(c, "finding.created", dep_id, title=title, summary=summary or "", finding_id=fid,
                  engine_name=engine_catalog(c.cfg).get(engine, {}).get("name", engine))
         return fid
 
@@ -1141,11 +1143,15 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
     launch.register(app, deps)
     ops.register(app, deps)
     mcp.register(app)
+    from . import connect
+    connect.register(app, deps)
 
     if background:
         @app.on_event("startup")
         def _start_background():
             app.state.worker_stop = events.start_worker(conn)
+            from .connect import core as connect_core
+            connect_core.start_scheduler(conn, app.state.worker_stop)
             ops.start_sweeper(conn, app.state.worker_stop,
                               float(os.environ.get("FIELDWORK_SWEEP_MINUTES", "30") or 30))
             minutes = float(os.environ.get("FIELDWORK_DEMO_RESET_MINUTES", "0") or 0)

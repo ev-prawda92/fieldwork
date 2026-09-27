@@ -71,6 +71,10 @@ def emit(conn, cfg: dict, tenant_id: str, event: str, data: dict) -> None:
     slack = ints.get("slack", {})
     if slack.get("enabled") and event in slack.get("events", []):
         enqueue(conn, tenant_id, "slack", {"event": event, "data": data})
+    if event == "task.assigned" and data.get("assignee_id") and conn.execute(
+            "SELECT 1 FROM connections WHERE tenant_id=? AND provider='slack' AND status='active' AND user_id IS NULL",
+            (tenant_id,)).fetchone():
+        enqueue(conn, tenant_id, "slack_dm", {"event": event, "data": data})
     for h in ints.get("webhooks", []):
         if event in h["events"]:
             enqueue(conn, tenant_id, "webhook", {"hook": h["id"], "url": h["url"], "event": event, "data": data})
@@ -84,24 +88,19 @@ def _allow_private() -> bool:
 
 def http_json(url: str, body: dict | None, headers: dict | None = None, method: str = "POST",
               timeout: int = 20) -> tuple[int, dict | str]:
-    """Outbound call with the same SSRF guard, no redirects and size cap as engine webhooks."""
-    plugins._guard_host(url, _allow_private())
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method, headers={
-        "Content-Type": "application/json", "Accept": "application/json",
-        "User-Agent": "Fieldwork/1", **(headers or {})})
+    """Outbound call with the same SSRF guard, no redirects and size cap as engine webhooks.
+    Goes through connect.http's transport, so tests can stand in for any service."""
+    from .connect import http as chttp
     try:
-        with plugins._opener.open(req, timeout=timeout) as r:
-            raw = r.read(1_000_000)
-            code = r.status
-    except urllib.error.HTTPError as e:
-        raw, code = e.read(20_000), e.code
-    except (urllib.error.URLError, OSError) as e:
-        raise plugins.PluginError(f"couldn't reach {urlparse(url).hostname}: {getattr(e, 'reason', e)}")
+        r = chttp.request(method, url, json_body=body, headers=headers, timeout=timeout)
+    except chttp.HTTPError as e:
+        raise plugins.PluginError(str(e))
+    if not r.body:
+        return r.status, {}
     try:
-        return code, json.loads(raw) if raw else {}
+        return r.status, json.loads(r.body)
     except ValueError:
-        return code, raw.decode(errors="replace")[:500]
+        return r.status, r.body.decode(errors="replace")[:500]
 
 
 def slack_text(event: str, d: dict) -> str:
@@ -131,7 +130,10 @@ def sign_webhook(secret_value: str, ts: str, body: bytes) -> str:
 def _deliver(conn, row) -> None:
     p = json.loads(row["payload_json"])
     kind = row["kind"]
-    if kind == "slack":
+    if kind in ("slack", "slack_dm"):
+        from .connect import slack as slack_app
+        if slack_app.deliver(conn, row["tenant_id"], kind, p) or kind == "slack_dm":
+            return
         url = secret(conn, row["tenant_id"], "slack_webhook_url")
         if not url:
             raise plugins.PluginError("Slack isn't connected (no webhook URL)")

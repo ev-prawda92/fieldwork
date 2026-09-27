@@ -291,7 +291,7 @@ def test_import_deployments_and_tasks(client):
     assert deps["Returns agent"]["customer_id"] == "cus_northfield"
     tcsv = ("deployment,title,assignee_email,status,due,share\n"
             "Order-to-cash agent,Map invoice states,maya@meridian.example,in progress,2026-10-09,\n"
-            "AP exception agent,Customer sends vendor master,ruth@meridian.example,open,2026-10-03,\n"
+            "AP exception agent,Customer sends vendor master,ruth@northfieldsupply.example,open,2026-10-03,\n"
             "Nope,x,,,,\n")
     r = client.post("/api/import", headers=H("head"), json={"kind": "tasks", "csv": tcsv}).json()
     assert r["created"] == 2 and len(r["errors"]) == 1

@@ -350,17 +350,32 @@ def logged_hours(conn, user_id: str, ws: date, dep_id: str | None = None) -> flo
     return round(float(conn.execute(q, args).fetchone()["h"] or 0), 1)
 
 
+def off_days(conn, user_id: str, ws: date) -> list[str]:
+    """Weekdays in the week starting ws that the person is out (time off from the console or their calendar)."""
+    we = ws + timedelta(days=4)
+    days = set()
+    for r in conn.execute("SELECT start_on, end_on FROM time_off WHERE user_id=? AND start_on<=? AND end_on>=?",
+                          (user_id, we.isoformat(), ws.isoformat())):
+        s, e = max(parse_day(r["start_on"]) or ws, ws), min(parse_day(r["end_on"]) or we, we)
+        while s <= e:
+            days.add(s.isoformat())
+            s += timedelta(days=1)
+    return sorted(days)
+
+
 def person_week(conn, u, ws: date) -> dict:
     rows = conn.execute("SELECT d.id, d.name, d.start_on, d.end_on, m.allocation FROM deployment_members m"
                         " JOIN deployments d ON d.id=m.deployment_id WHERE m.user_id=?", (u["id"],)).fetchall()
-    weekly = float(u["weekly_hours"] or 0)
+    full = float(u["weekly_hours"] or 0)
+    off = off_days(conn, u["id"], ws)
+    weekly = round(full * (5 - len(off)) / 5, 1)
     allocs = [{"deployment_id": r["id"], "deployment": r["name"], "allocation": r["allocation"],
-               "hours": round(r["allocation"] * weekly, 1)} for r in rows if r["allocation"] and _dep_active(r, ws)]
+               "hours": round(r["allocation"] * full, 1)} for r in rows if r["allocation"] and _dep_active(r, ws)]
     planned = round(sum(a["hours"] for a in allocs), 1)
     return {"user_id": u["id"], "name": u["name"], "role": u["role"], "available": weekly,
             "planned": planned, "logged": logged_hours(conn, u["id"], ws),
             "free": round(max(0.0, weekly - planned), 1), "over": round(max(0.0, planned - weekly), 1),
-            "allocations": allocs}
+            "allocations": allocs, "off_days": off, "full_week": full}
 
 
 def team_week(conn, cfg: dict, tenant_id: str, ws: date) -> dict:
@@ -382,7 +397,7 @@ def utilization(conn, cfg: dict, tenant_id: str, weeks: int = 4, today: date | N
     for i in range(weeks):
         ws = ws0 + timedelta(weeks=i)
         for u in people:
-            avail += float(u["weekly_hours"] or 0)
+            avail += float(u["weekly_hours"] or 0) * (5 - len(off_days(conn, u["id"], ws))) / 5
             logged += logged_hours(conn, u["id"], ws)
     return round(logged / avail, 3) if avail and logged else None
 
@@ -655,7 +670,31 @@ def _conditions(conn, cfg: dict, dep, at: datetime) -> list[dict]:
         if days > BLOCKED_DAYS:
             out.append({"rule": "blocked_task", "key": f"blocked_task:{t['id']}", "severity": "med",
                         "text": f"Blocked {days} days: {t['title'][:120]}"})
+    # Quiet customer: only where someone has connected their mailbox and this customer's mail is being seen.
+    if not dep["hold_since"] and any(states[k]["state"] == "in_progress" for k in keys if k != last):
+        lc = last_contact(conn, dep["customer_id"], at)
+        if lc and lc["inbound_days"] is not None and lc["inbound_days"] > QUIET_DAYS:
+            out.append({"rule": "quiet_customer", "key": "quiet_customer", "severity": "low",
+                        "text": f"No word from the customer in {int(lc['inbound_days'])} days."})
     return out
+
+
+QUIET_DAYS = 10
+
+
+def last_contact(conn, customer_id: str, at: datetime | None = None) -> dict | None:
+    """When the customer last emailed the team, and the team them (from opted-in mailboxes)."""
+    at = at or now()
+    rows = {r["direction"]: r["at"] for r in conn.execute(
+        "SELECT direction, MAX(at) at FROM contact_signals WHERE customer_id=? GROUP BY direction", (customer_id,))}
+    if not rows:
+        return None
+
+    def days(s):
+        return round((at - parse_ts(s)).total_seconds() / 86400, 1) if s else None
+    latest = max(rows.values())
+    return {"at": latest, "days": days(latest), "last_inbound": rows.get("in"), "inbound_days": days(rows.get("in")),
+            "last_outbound": rows.get("out"), "outbound_days": days(rows.get("out"))}
 
 
 def evaluate(conn, tenant_id: str, tenant_name: str, cfg: dict, dep, at: datetime | None = None) -> dict:
@@ -678,7 +717,7 @@ def evaluate(conn, tenant_id: str, tenant_name: str, cfg: dict, dep, at: datetim
                          {"deployment": dep["id"], "text": c["text"], "severity": c["severity"]})
             events.emit(conn, cfg, tenant_id, "flag.raised",
                         {"deployment_id": dep["id"], "deployment": dep["name"], "text": c["text"],
-                         "severity": c["severity"], "actor": "Rules"})
+                         "severity": c["severity"], "actor": "Rules", "flag_id": fid})
             raised.append(key)
         elif (existing[key]["text"], existing[key]["severity"]) != (c["text"], c["severity"]):
             conn.execute("UPDATE flags SET text=?, severity=? WHERE id=?",
@@ -697,7 +736,7 @@ def evaluate(conn, tenant_id: str, tenant_name: str, cfg: dict, dep, at: datetim
                 audit.record(conn, tenant_id, "rule:stage_overrun", "delay.open", sid,
                              {"deployment": dep["id"], "stage": c["stage"], "signal": "stage_overrun"})
                 events.emit(conn, cfg, tenant_id, "delay.opened",
-                            {"deployment_id": dep["id"], "deployment": dep["name"],
+                            {"deployment_id": dep["id"], "deployment": dep["name"], "delay_id": sid,
                              "reason": SIGNALS["stage_overrun"][1], "actor": "Rules",
                              "owner": owner_labels(tenant_name)["team"]})
     for key, f in existing.items():
@@ -848,7 +887,7 @@ def register(app, d) -> None:
             c.log("delay.open", sid, {"deployment": dep_id, "signal": body.signal,
                                       "proposed_owner": row["proposed_owner"], "reason": row["proposed_reason"]})
             if row["status"] == "open":
-                d.emit(c, "delay.opened", dep_id, reason=row["proposed_reason"],
+                d.emit(c, "delay.opened", dep_id, reason=row["proposed_reason"], delay_id=sid,
                        owner=labels(c)[row["proposed_owner"]])
         return delay_out(row, labels(c))
 
@@ -946,7 +985,7 @@ def register(app, d) -> None:
                          " status, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                          (fid, c.tenant_id, dep_id, body.severity, body.text, None, c.uid, "open", audit.now()))
             c.log("flag.raise", fid, {"deployment": dep_id, "text": body.text, "severity": body.severity})
-            d.emit(c, "flag.raised", dep_id, text=body.text, severity=body.severity)
+            d.emit(c, "flag.raised", dep_id, text=body.text, severity=body.severity, flag_id=fid)
         return {"id": fid}
 
     class FlagAct(BaseModel):
@@ -1065,7 +1104,7 @@ def register(app, d) -> None:
             "lead": lead["name"] if lead else None,
             "start_on": dep["start_on"], "end_on": dep["end_on"], "budget_hours": dep["budget_hours"],
             "progress": progress(dep), "days_left": days_left(dep), "hours_spent": hours_spent(conn, dep["id"]),
-            "burn": burn(conn, dep),
+            "burn": burn(conn, dep), "last_contact": last_contact(conn, dep["customer_id"]),
             "conformance": ({"status": json.loads(conf["result_json"]).get("status"),
                              "summary": json.loads(conf["result_json"]).get("summary"),
                              "at": conf["created_at"]} if conf else None),
@@ -1270,6 +1309,8 @@ def register(app, d) -> None:
             raise HTTPException(403, "time is logged by the delivery team")
         day = now().date()
         pw = person_week(conn, c.user, week_start(day))
+        if day.isoformat() in pw["off_days"]:
+            return {"logged": [], "hours": 0, "note": "you're out today"}
         logged = []
         with db.tx(conn):
             for a in pw["allocations"]:
@@ -1431,7 +1472,7 @@ def register(app, d) -> None:
                          (aid, c.tenant_id, dep_id, body.agent, body.request, body.detail, c.uid, "pending",
                           audit.now()))
             c.log("approval.request", aid, {"deployment": dep_id, "agent": body.agent, "request": body.request})
-            d.emit(c, "approval.requested", dep_id, agent=body.agent, request=body.request)
+            d.emit(c, "approval.requested", dep_id, agent=body.agent, request=body.request, approval_id=aid)
         return {"id": aid, "status": "pending"}
 
     class DecideApproval(BaseModel):

@@ -28,6 +28,7 @@ import hashlib
 import hmac
 import json
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from . import config, events, plugins
 
@@ -53,6 +54,21 @@ def _need(value, what: str):
     return value
 
 
+def _connection(conn, tenant_id: str, provider: str):
+    """The workspace's one-click install for this tracker, if there is one (preferred over a pasted token)."""
+    from .connect import core
+    return core.active(conn, tenant_id, provider)
+
+
+def _token(conn, cx) -> str:
+    from .connect import core
+    return core.access_token(conn, cx)
+
+
+def available(conn, tenant_id: str, cfg: dict, provider: str) -> bool:
+    return bool(cfg["integrations"].get(provider, {}).get("enabled")) or _connection(conn, tenant_id, provider) is not None
+
+
 def task_body(task: dict, dep_id: str) -> str:
     return (f"{task['title']}\n\nFrom Fieldwork · {events.dep_link(dep_id)}\n"
             f"Status: {task['status'].replace('_', ' ')}" + (f" · due {task['due']}" if task.get("due") else ""))
@@ -65,7 +81,9 @@ class GitHub:
 
     def __init__(self, conn, tenant_id, cfg):
         self.api = cfg["integrations"]["github"]["api_base"]
-        self.token = _need(events.secret(conn, tenant_id, "github_token"), "GitHub token")
+        self.cx = _connection(conn, tenant_id, "github")
+        self.token = _token(conn, self.cx) if self.cx else _need(events.secret(conn, tenant_id, "github_token"),
+                                                                 "GitHub token")
 
     def _h(self):
         return {"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json",
@@ -75,9 +93,10 @@ class GitHub:
         return [STATUS_LABELS[status]] if status in STATUS_LABELS else []
 
     def create(self, target: str, task: dict, dep_id: str) -> tuple[str, str]:
-        code, r = events.http_json(f"{self.api}/repos/{target}/issues", {
-            "title": task["title"], "body": task_body(task, dep_id), "labels": self._labels(task["status"])},
-            self._h())
+        body = {"title": task["title"], "body": task_body(task, dep_id), "labels": self._labels(task["status"])}
+        if task.get("_assignee_handle"):
+            body["assignees"] = [task["_assignee_handle"]]
+        code, r = events.http_json(f"{self.api}/repos/{target}/issues", body, self._h())
         if code >= 300:
             raise TrackerError(f"GitHub create failed ({code}): {r}")
         if task["status"] == "done":
@@ -101,7 +120,7 @@ class GitHub:
         if headers.get("x-github-event") != "issues" or "issue" not in payload:
             return []
         iss = payload["issue"]
-        labels = {l["name"] for l in iss.get("labels", [])}
+        labels = {l["name"] for l in iss.get("labels") or []}
         if iss.get("state") == "closed":
             status = "done"
         elif STATUS_LABELS["blocked"] in labels:
@@ -110,7 +129,10 @@ class GitHub:
             status = "in_progress"
         else:
             status = "open"
-        return [(str(iss["number"]), {"status": status, "title": iss.get("title")})]
+        ch = {"status": status, "title": iss.get("title")}
+        if iss.get("assignee"):
+            ch["assignee"] = {"login": iss["assignee"].get("login"), "id": str(iss["assignee"].get("id", ""))}
+        return [(str(iss["number"]), ch)]
 
 
 # ------------------------------------------------------------------ Linear
@@ -123,7 +145,9 @@ class Linear:
 
     def __init__(self, conn, tenant_id, cfg):
         self.api = cfg["integrations"]["linear"]["api_base"] + "/graphql"
-        self.key = _need(events.secret(conn, tenant_id, "linear_api_key"), "Linear API key")
+        self.cx = _connection(conn, tenant_id, "linear")
+        self.key = ("Bearer " + _token(conn, self.cx)) if self.cx else _need(
+            events.secret(conn, tenant_id, "linear_api_key"), "Linear API key")
 
     def _q(self, query: str, variables: dict) -> dict:
         code, r = events.http_json(self.api, {"query": query, "variables": variables}, {"Authorization": self.key})
@@ -139,6 +163,14 @@ class Linear:
 
     def create(self, target: str, task: dict, dep_id: str) -> tuple[str, str]:
         inp = {"teamId": target, "title": task["title"], "description": task_body(task, dep_id)}
+        if task.get("_assignee_email"):
+            try:
+                u = self._q("query($e:String!){ users(filter:{email:{eq:$e}}){ nodes{ id } } }",
+                            {"e": task["_assignee_email"]})["users"]["nodes"]
+                if u:
+                    inp["assigneeId"] = u[0]["id"]
+            except TrackerError:
+                pass
         sid = self._state(target, task["status"])
         if sid:
             inp["stateId"] = sid
@@ -170,6 +202,9 @@ class Linear:
         ch = {"title": d.get("title")}
         if status:
             ch["status"] = status
+        a = d.get("assignee") or ({"id": d["assigneeId"]} if d.get("assigneeId") else None)
+        if a:
+            ch["assignee"] = {"id": a.get("id"), "email": a.get("email"), "name": a.get("name")}
         return [(d["id"], ch)]
 
 
@@ -183,7 +218,14 @@ class Jira:
 
     def __init__(self, conn, tenant_id, cfg):
         j = cfg["integrations"]["jira"]
-        self.base = _need(j["base_url"], "Jira site URL")
+        self.cx = _connection(conn, tenant_id, "jira")
+        if self.cx:  # OAuth (3LO): calls go through api.atlassian.com, links point at the site
+            from .connect.trackers import JIRA_API
+            self.base = f"{JIRA_API}/ex/jira/{self.cx.extra['cloud_id']}"
+            self.site = self.cx.extra.get("site_url", "").rstrip("/")
+            self.auth = "Bearer " + _token(conn, self.cx)
+            return
+        self.base = self.site = _need(j["base_url"], "Jira site URL")
         email = _need(j["email"], "Jira account email")
         token = _need(events.secret(conn, tenant_id, "jira_api_token"), "Jira API token")
         self.auth = "Basic " + base64.b64encode(f"{email}:{token}".encode()).decode()
@@ -204,12 +246,19 @@ class Jira:
     def create(self, target: str, task: dict, dep_id: str) -> tuple[str, str]:
         doc = {"type": "doc", "version": 1, "content": [
             {"type": "paragraph", "content": [{"type": "text", "text": task_body(task, dep_id)}]}]}
-        r = self._call("/rest/api/3/issue", {"fields": {
-            "project": {"key": target}, "summary": task["title"], "issuetype": {"name": "Task"},
-            "description": doc}})
+        fields = {"project": {"key": target}, "summary": task["title"], "issuetype": {"name": "Task"},
+                  "description": doc}
+        if task.get("_assignee_email"):
+            try:
+                us = self._call("/rest/api/3/user/search?query=" + quote(task["_assignee_email"]), None, "GET")
+                if isinstance(us, list) and us:
+                    fields["assignee"] = {"accountId": us[0]["accountId"]}
+            except TrackerError:
+                pass
+        r = self._call("/rest/api/3/issue", {"fields": fields})
         if task["status"] != "open":
             self._transition(r["key"], task["status"])
-        return r["key"], f"{self.base}/browse/{r['key']}"
+        return r["key"], f"{self.site}/browse/{r['key']}"
 
     def update(self, target: str, ext: str, task: dict) -> None:
         self._call(f"/rest/api/3/issue/{ext}", {"fields": {"summary": task["title"]}}, "PUT")
@@ -231,6 +280,9 @@ class Jira:
         status = {"new": "open", "indeterminate": "in_progress", "done": "done"}.get(cat)
         if status:
             ch["status"] = status
+        if f.get("assignee"):
+            ch["assignee"] = {"id": f["assignee"].get("accountId"), "email": f["assignee"].get("emailAddress"),
+                              "name": f["assignee"].get("displayName")}
         return [(iss["key"], ch)]
 
 
@@ -245,7 +297,7 @@ def queue_push(conn, tenant_id: str, cfg: dict, dep_row, task_id: str, origin: s
         return
     sync = json.loads(dep_row["sync_json"] or "{}")
     prov = sync.get("provider")
-    if not prov or not cfg["integrations"].get(prov, {}).get("enabled"):
+    if not prov or not available(conn, tenant_id, cfg, prov):
         return
     events.enqueue(conn, tenant_id, "tracker", {"provider": prov, "target": sync["target"], "task_id": task_id,
                                                 "deployment_id": dep_row["id"]})
@@ -265,7 +317,14 @@ def deliver(conn, tenant_id: str, p: dict) -> None:
             conn.execute("UPDATE task_links SET synced_at=? WHERE task_id=? AND provider=?",
                          (_now(), p["task_id"], p["provider"]))
     else:
-        ext, url = adapter.create(p["target"], dict(task), p["deployment_id"])
+        t = dict(task)
+        if task["assignee_id"]:
+            u = conn.execute("SELECT email, profile_json FROM users WHERE id=?", (task["assignee_id"],)).fetchone()
+            if u:
+                t["_assignee_email"] = u["email"]
+                handles = (json.loads(u["profile_json"] or "{}").get("handles") or {})
+                t["_assignee_handle"] = handles.get(p["provider"])
+        ext, url = adapter.create(p["target"], t, p["deployment_id"])
         with conn.tx():
             conn.execute("INSERT INTO task_links (task_id, tenant_id, provider, external_id, url, synced_at)"
                          " VALUES (?,?,?,?,?,?) ON CONFLICT (task_id, provider) DO UPDATE SET"
@@ -273,8 +332,10 @@ def deliver(conn, tenant_id: str, p: dict) -> None:
                          (p["task_id"], tenant_id, p["provider"], ext, url, _now()))
 
 
-def apply_inbound(conn, tenant_id: str, provider: str, changes: list[tuple[str, dict]], cfg: dict) -> list[str]:
-    """Apply tracker-side changes to linked tasks. Returns the task ids that changed."""
+def apply_inbound(conn, tenant_id: str, provider: str, changes: list[tuple[str, dict]], cfg: dict,
+                  resolve=None) -> list[str]:
+    """Apply tracker-side changes to linked tasks. Returns the task ids that changed.
+    resolve(assignee_info) -> user id or None maps the tracker's assignee to a person here."""
     from . import audit
     changed = []
     for ext, ch in changes:
@@ -288,6 +349,10 @@ def apply_inbound(conn, tenant_id: str, provider: str, changes: list[tuple[str, 
             upd["status"] = ch["status"]
         if ch.get("title") and ch["title"] != task["title"]:
             upd["title"] = ch["title"][:200]
+        if ch.get("assignee") and resolve:
+            uid = resolve(ch["assignee"])
+            if uid and uid != task["assignee_id"] and _can_hold(conn, cfg, task, uid):
+                upd["assignee_id"] = uid
         if not upd:
             continue
         upd["updated_at"] = audit.now()
@@ -304,10 +369,24 @@ def apply_inbound(conn, tenant_id: str, provider: str, changes: list[tuple[str, 
                 ops.on_task_status(conn, tenant_id, t["name"], cfg, task, upd["status"], origin=provider)
             dep = conn.execute("SELECT name FROM deployments WHERE id=?", (task["deployment_id"],)).fetchone()
             base = {"deployment_id": task["deployment_id"], "deployment": dep["name"], "title": upd.get("title", task["title"]),
-                    "actor": provider.title()}
+                    "actor": provider.title(), "task_id": task["id"]}
             if upd.get("status") == "blocked":
                 events.emit(conn, cfg, tenant_id, "task.blocked", {**base, "assignee": None})
             elif upd.get("status") == "done":
                 events.emit(conn, cfg, tenant_id, "task.done", base)
+            if upd.get("assignee_id"):
+                u = conn.execute("SELECT name FROM users WHERE id=?", (upd["assignee_id"],)).fetchone()
+                events.emit(conn, cfg, tenant_id, "task.assigned", {**base, "assignee": u["name"],
+                                                                     "assignee_id": upd["assignee_id"]})
         changed.append(task["id"])
     return changed
+
+
+def _can_hold(conn, cfg: dict, task, uid: str) -> bool:
+    """Only move a task to someone who can see it: internal tasks stay with people who see internal work."""
+    u = conn.execute("SELECT role FROM users WHERE id=? AND tenant_id=?", (uid, task["tenant_id"])).fetchone()
+    if not u:
+        return False
+    if task["visibility"] == "shared":
+        return True
+    return cfg["permissions"].get("task.view_internal", {}).get(u["role"]) is not None

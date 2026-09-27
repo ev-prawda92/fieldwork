@@ -321,6 +321,92 @@ ALTER TABLE deployments ADD COLUMN hold_reason TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN waiting_on TEXT;
 ALTER TABLE tasks ADD COLUMN blocked_reason TEXT NOT NULL DEFAULT ''
 """),
+    (7, "live connections: installs, inbound events, time off, contact signals", """
+CREATE TABLE IF NOT EXISTS connections (
+    id                  TEXT PRIMARY KEY,
+    tenant_id           TEXT NOT NULL REFERENCES tenants(id),
+    provider            TEXT NOT NULL,
+    user_id             TEXT REFERENCES users(id),
+    status              TEXT NOT NULL DEFAULT 'active',
+    account_name        TEXT NOT NULL DEFAULT '',
+    external_account_id TEXT NOT NULL DEFAULT '',
+    tokens              TEXT,
+    token_expires_at    TEXT,
+    extra_json          TEXT NOT NULL DEFAULT '{}',
+    cursor_json         TEXT NOT NULL DEFAULT '{}',
+    settings_json       TEXT NOT NULL DEFAULT '{}',
+    webhook_json        TEXT NOT NULL DEFAULT '{}',
+    last_event_at       TEXT,
+    last_sync_at        TEXT,
+    last_reconcile_at   TEXT,
+    retry_at            TEXT,
+    last_error          TEXT,
+    errors              INTEGER NOT NULL DEFAULT 0,
+    created_by          TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_conn_tenant ON connections(tenant_id, provider);
+CREATE INDEX IF NOT EXISTS ix_conn_account ON connections(provider, external_account_id);
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state       TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL,
+    user_id     TEXT NOT NULL,
+    provider    TEXT NOT NULL,
+    personal    INTEGER NOT NULL DEFAULT 0,
+    verifier    TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS inbound_events (
+    id            {AUTO},
+    tenant_id     TEXT NOT NULL,
+    connection_id TEXT NOT NULL,
+    provider      TEXT NOT NULL,
+    external_id   TEXT NOT NULL,
+    kind          TEXT NOT NULL DEFAULT '',
+    payload_json  TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    error         TEXT,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    received_at   TEXT NOT NULL,
+    processed_at  TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_inbound_ext ON inbound_events(connection_id, external_id);
+CREATE INDEX IF NOT EXISTS ix_inbound_status ON inbound_events(status, received_at);
+CREATE TABLE IF NOT EXISTS time_off (
+    id            TEXT PRIMARY KEY,
+    tenant_id     TEXT NOT NULL,
+    user_id       TEXT NOT NULL REFERENCES users(id),
+    start_on      TEXT NOT NULL,
+    end_on        TEXT NOT NULL,
+    source        TEXT NOT NULL DEFAULT 'console',
+    external_id   TEXT,
+    connection_id TEXT,
+    title         TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_timeoff_user ON time_off(tenant_id, user_id, start_on);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_timeoff_ext ON time_off(connection_id, external_id);
+CREATE TABLE IF NOT EXISTS contact_signals (
+    id            {AUTO},
+    tenant_id     TEXT NOT NULL,
+    user_id       TEXT NOT NULL,
+    connection_id TEXT NOT NULL,
+    customer_id   TEXT NOT NULL,
+    domain        TEXT NOT NULL,
+    direction     TEXT NOT NULL,
+    at            TEXT NOT NULL,
+    external_id   TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_contact_ext ON contact_signals(connection_id, external_id);
+CREATE INDEX IF NOT EXISTS ix_contact_customer ON contact_signals(tenant_id, customer_id, at);
+ALTER TABLE time_entries ADD COLUMN external_id TEXT;
+ALTER TABLE time_entries ADD COLUMN connection_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_time_ext ON time_entries(connection_id, external_id);
+ALTER TABLE opportunities ADD COLUMN connection_id TEXT;
+ALTER TABLE opportunities ADD COLUMN deployment_id TEXT;
+ALTER TABLE customers ADD COLUMN domains TEXT NOT NULL DEFAULT ''
+"""),
 ]
 
 _AUTO = {"sqlite": "INTEGER PRIMARY KEY AUTOINCREMENT", "postgres": "BIGSERIAL PRIMARY KEY"}
@@ -420,7 +506,7 @@ def init(conn: DB) -> None:
 
 def reset(conn: DB) -> None:
     """Drop everything. Used by `fieldwork seed` and tests; never by the API."""
-    tables = ["deployment_stages", "delays", "time_entries", "opportunities", "flags", "approvals", "checklist_items", "outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
+    tables = ["connections", "oauth_states", "inbound_events", "time_off", "contact_signals", "deployment_stages","delays", "time_entries", "opportunities", "flags", "approvals", "checklist_items", "outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
               "tasks", "stage_events", "deployment_members", "deployments", "customers", "users",
               "tenants", "schema_migrations"]
     with conn.lock:

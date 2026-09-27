@@ -220,7 +220,7 @@ def register(app, d) -> None:
         if body.provider:
             if body.provider not in config.TRACKERS:
                 raise HTTPException(422, "provider must be github, linear or jira")
-            if not c.cfg["integrations"][body.provider]["enabled"]:
+            if not trackers.available(conn, c.tenant_id, c.cfg, body.provider):
                 raise HTTPException(409, f"{body.provider.title()} isn't connected for this workspace")
             if not body.target.strip():
                 raise HTTPException(422, {"github": "repo as owner/name", "linear": "team ID",
@@ -235,7 +235,11 @@ def register(app, d) -> None:
                 dep = conn.execute("SELECT * FROM deployments WHERE id=?", (dep_id,)).fetchone()
                 for t in list(conn.execute("SELECT id FROM tasks WHERE deployment_id=?", (dep_id,))):
                     trackers.queue_push(conn, c.tenant_id, c.cfg, dep, t["id"])
-        return {"sync": sync}
+        hook = None
+        if sync:  # with a one-click install, subscribe to changes on that repo/project too
+            from .connect import trackers as live
+            hook = live.ensure_webhook(conn, c.tenant_id, sync["provider"], sync["target"])
+        return {"sync": sync, "webhook": hook}
 
     @app.get("/api/deployments/{dep_id}/links")
     def task_links(dep_id: str, c: Ctx = Depends(ctx)):
