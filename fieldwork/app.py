@@ -439,9 +439,16 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
                          (uid, c.tenant_id, body.name, body.email.strip(), body.role, None,
                           token_hash(tok), "{}", audit.now()))
             c.log("people.add", uid, {"name": body.name, "role": body.role})
-        note = ("shown once; share it securely" if not c.cfg["sso"]["required"]
-                else "this workspace requires company sign-in, so they'll sign in through your identity provider")
-        return {"id": uid, "token": tok, "note": note}
+        from . import beta
+        ways = [{"github": "GitHub", "google": "Google"}.get(w, w) for w in beta.configured()]
+        if c.cfg["sso"]["required"]:
+            note = "this workspace requires company sign-in, so they'll sign in through your identity provider"
+        elif ways:
+            note = (f"they sign in at {events.public_url()} with {' or '.join(ways)} using {body.email.strip()}; "
+                    "the token is a fallback, shown once")
+        else:
+            note = "shown once; share it securely"
+        return {"id": uid, "token": tok, "note": note, "sign_in_with": ways, "sign_in_url": events.public_url()}
 
     class PersonPatch(BaseModel):
         role: str | None = None
@@ -1143,8 +1150,9 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
     launch.register(app, deps)
     ops.register(app, deps)
     mcp.register(app)
-    from . import connect
+    from . import beta, connect
     connect.register(app, deps)
+    beta.register(app, deps)
 
     if background:
         @app.on_event("startup")
@@ -1157,12 +1165,12 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
             minutes = float(os.environ.get("FIELDWORK_DEMO_RESET_MINUTES", "0") or 0)
             if demo_on() and minutes > 0:
                 import threading
-                from .seed import seed
+                from .seed import reseed_demo
 
-                def reset_loop():
+                def reset_loop():  # only the demo workspaces; beta workspaces on the same server are untouched
                     while not app.state.worker_stop.wait(minutes * 60):
                         with conn.lock:
-                            seed(conn)
+                            reseed_demo(conn)
 
                 threading.Thread(target=reset_loop, name="fieldwork-demo-reset", daemon=True).start()
 

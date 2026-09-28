@@ -295,6 +295,34 @@ def seed(db_url) -> dict:
     conn = db_url if isinstance(db_url, db.DB) else db.connect(db_url)
     db.reset(conn)
     db.init(conn)
+    return build_demo(conn)
+
+
+DEMO_TENANTS = ("ten_meridian", "ten_orbital")
+# Children before parents, so foreign keys hold on both databases.
+_TENANT_TABLES = ("feedback", "contact_signals", "time_off", "inbound_events", "oauth_states", "connections",
+                  "checklist_items", "approvals", "flags", "opportunities", "time_entries", "delays", "reports",
+                  "task_links", "outbox", "deployment_stages", "findings", "tasks", "stage_events")
+
+
+def reseed_demo(conn) -> dict:
+    """Reset only the demo workspaces, leaving every real workspace alone (hosted beta + public demo)."""
+    ph = ",".join("?" * len(DEMO_TENANTS))
+    with db.tx(conn):
+        for t in _TENANT_TABLES:
+            conn.execute(f"DELETE FROM {t} WHERE tenant_id IN ({ph})", DEMO_TENANTS)
+        conn.execute(f"DELETE FROM deployment_members WHERE deployment_id IN (SELECT id FROM deployments"
+                     f" WHERE tenant_id IN ({ph}))", DEMO_TENANTS)
+        for t in ("deployments", "customers", "personal_tokens", "sessions", "sso_states", "tenant_secrets",
+                  "engine_credentials"):
+            conn.execute(f"DELETE FROM {t} WHERE tenant_id IN ({ph})", DEMO_TENANTS)
+        conn.execute(f"DELETE FROM users WHERE tenant_id IN ({ph})", DEMO_TENANTS)
+        conn.execute(f"DELETE FROM audit WHERE tenant_id IN ({ph})", DEMO_TENANTS)
+        conn.execute(f"DELETE FROM tenants WHERE id IN ({ph})", DEMO_TENANTS)
+    return build_demo(conn)
+
+
+def build_demo(conn) -> dict:
     ts = audit.now()
     T = "ten_meridian"
 

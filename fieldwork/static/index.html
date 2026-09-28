@@ -357,10 +357,21 @@ async function signIn(token) {
 async function loadConfig() { const c = await api("/api/config"); S.cfg = c.config; S.meta = c; S.engines = c.engines; applyBrand(); }
 function lastWorkspace() { try { return localStorage.getItem("fw_ws") || ""; } catch (e) { return ""; } }
 
+async function loginWith(provider, mode) {
+  const body = { provider, mode };
+  if (mode === "signup") { body.workspace = (val("nw_name") || "").trim(); if (!body.workspace) { toast("Name your workspace first", true); return; } }
+  const r = await fetch("/api/beta/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { toast(j.detail || "That didn't work", true); return; }
+  location.href = j.url;
+}
+const PROVIDER_NAME = { github: "GitHub", google: "Google" };
 async function renderSignIn() {
   H = {};
-  let demos = [];
+  let demos = [], beta = { signup: false, providers: [] };
   try { const r = await fetch("/api/demo"); if (r.ok) demos = await r.json(); } catch (e) {}
+  try { const r = await fetch("/api/beta"); if (r.ok) beta = await r.json(); } catch (e) {}
+  const signupFirst = beta.signup && new URLSearchParams(location.search).has("signup");
   const sso = on(async () => {
     const slug = val("ws").trim().toLowerCase();
     if (!slug) { toast("Enter your workspace name", true); return; }
@@ -372,16 +383,26 @@ async function renderSignIn() {
     location.href = `/auth/sso/${encodeURIComponent(slug)}/start`;
   });
   const tok = on(() => signIn(val("tok")));
+  const provBtns = mode => beta.providers.map(p => `<button class="btn ${mode === "signup" ? "primary" : ""}" data-on="${on(() => loginWith(p, mode))}">Continue with ${esc(PROVIDER_NAME[p] || p)}</button>`).join("");
+  const startPanel = beta.signup && beta.providers.length ? `<div class="panel" style="${signupFirst ? "border-color:var(--accent)" : ""}">
+      <div class="row nowrap" style="justify-content:space-between"><h2 style="margin:0">Start a workspace</h2><span class="chip accent">FREE BETA</span></div>
+      <p class="small muted" style="margin:0">Your own workspace on the default template: stages, roles, delay ledger, capacity. Make it yours, then invite your team.</p>
+      <label class="field"><span>Team or company name</span><input id="nw_name" placeholder="Acme Deployments" autocomplete="organization"></label>
+      <div class="stack" style="gap:8px">${provBtns("signup")}</div>
+      <p class="xs muted" style="margin:0">Beta: free while it lasts. Your data stays yours; we don't sell or share it. Feedback button on every screen.</p></div>` : "";
   $("#root").innerHTML = `<div class="signin">
     <div class="brand" style="padding:0">${logo(30)}<div><b>${esc(brand().product_name)}</b><small>For deployment teams</small></div></div>
+    ${signupFirst ? startPanel : ""}
     <div class="panel">
       <h2>Sign in</h2>
+      ${beta.providers.length ? `<div class="stack" style="gap:8px">${provBtns("signin")}</div><div class="xs muted" style="text-align:center">or with your company</div>` : ""}
       <label class="field"><span>Workspace</span><input id="ws" placeholder="your-company" autocomplete="organization" value="${esc(lastWorkspace())}" data-enter="${sso}"></label>
       <button class="btn primary" data-on="${sso}">Sign in with company SSO</button>
       <details><summary>Use an access token instead</summary>
         <div class="stack" style="margin-top:10px"><label class="field"><span>Access token</span><input id="tok" type="password" autocomplete="off" data-enter="${tok}"></label>
         <button class="btn" data-on="${tok}">Sign in with token</button></div></details>
     </div>
+    ${signupFirst ? "" : startPanel}
     ${demos.length ? `<div class="panel"><div class="label">Demo workspace · Meridian AI's deployment team</div>
       <div class="stack" style="gap:6px">${demos.map(d => `<button class="btn" style="justify-content:flex-start;height:40px" data-on="${on(() => signIn(d.token))}">${esc(d.label)}</button>`).join("")}</div></div>` : ""}
     <div class="row muted small"><button class="btn sm ghost" data-on="${on(() => { setTheme(theme() === "dark" ? "light" : "dark"); })}">${sunIcon}${theme() === "dark" ? "Light mode" : "Dark mode"}</button><div class="spacer"></div><a href="/welcome">What is this?</a></div>
@@ -471,6 +492,7 @@ function shell({ nav, ctx }) {
     <main class="main">
       <header class="top"><div class="ctx">${ctx}</div>
         <div class="me"><span id="live" class="livedot ${S.live ? "on" : ""}" title="Screens update as things change">LIVE</span><span class="who">${esc(S.me.user.name)} · ${esc(S.me.user.role_name)}</span>
+          <button class="btn sm" data-on="${on(feedbackBox)}">Feedback</button>
           <button class="btn sm" aria-label="Switch between light and dark mode" data-on="${on(() => { setTheme(theme() === "dark" ? "light" : "dark"); route(); })}">${sunIcon}${t === "dark" ? "Light mode" : "Dark mode"}</button>
           <button class="avatar chip ${KIND_CHIP[kind()][1]}" id="avatar" aria-label="Account" data-on="${on(userMenu)}">${esc(initials(S.me.user.name))}</button></div>
       </header>
@@ -605,8 +627,37 @@ async function homeView() {
     title = `${greeting()}, ${first}`;
     sub = `What ${esc(S.me.tenant.name)} has shared with you`;
   }
+  const pf = can("deployment.view") ? await F.portfolio() : { deployments: [] };
   page(`<div class="headrow"><div><h1>${esc(title)}</h1><p class="lede">${sub}</p></div>${dayChip()}</div>
+    ${await gettingStarted(pf)}
     ${out.length ? out.join("") : `<div class="empty">Your home screen has no sections. A workspace admin can add them in Settings → Home screens.</div>`}`);
+}
+
+async function gettingStarted(pf) {
+  if (!can("deployment.create") && !can("config.edit")) return "";
+  const done = { dep: pf.deployments.length > 0 };
+  if (!S.welcome && done.dep) return "";
+  let people = [], cat = null;
+  try { people = can("people.read") ? await api("/api/people") : []; } catch (e) {}
+  try { cat = can("integrations.manage") ? await api("/api/connections") : null; } catch (e) {}
+  done.team = people.length > 1;
+  done.tools = !!cat && cat.providers.some(p => !p.personal && p.connections.some(c => c.status === "active"));
+  const step = (ok, t, d, btn) => `<div class="row nowrap" style="gap:12px;padding:10px 0;border-top:1px solid var(--line);align-items:flex-start"><span class="mono ${ok ? "good" : "muted"}" style="width:18px">${ok ? "✓" : "○"}</span><div style="flex:1"><div style="font-weight:500">${esc(t)}</div><div class="small muted">${esc(d)}</div></div>${ok ? "" : btn}</div>`;
+  const hide = on(() => { S.welcome = false; route(); });
+  return `<div class="panel" style="gap:4px;border-color:var(--accent)"><div class="phead"><div class="label">Getting started · ${esc(S.me.tenant.name)}</div>${done.dep ? `<button class="btn xs ghost" data-on="${hide}">Hide</button>` : ""}</div>
+    ${step(done.dep, "Open your first deployment", "A customer and what you're deploying for them. Stages, clocks and the delay ledger start here.", `<button class="btn sm primary" data-on="${on(() => go("chains"))}">Open one</button>`)}
+    ${can("people.manage") ? step(done.team, "Invite your team", "Add people with the email they'll sign in with, and pick their role.", `<button class="btn sm" data-on="${on(() => go("team"))}">Invite</button>`) : ""}
+    ${cat ? step(done.tools, "Connect Slack and your tracker", "Alerts with buttons, and tasks that sync both ways with GitHub, Linear or Jira.", `<button class="btn sm" data-on="${on(() => go("integrations"))}">Connect</button>`) : ""}
+    ${can("config.edit") ? step(false, "Make it yours", "Your stages, roles, what each role sees, your name and colors. Optional; the defaults work.", `<button class="btn sm ghost" data-on="${on(() => go("settings"))}">Settings</button>`) : ""}
+  </div>`;
+}
+
+function feedbackBox() {
+  const ex = $("#fbbox"); if (ex) { ex.remove(); return; }
+  const el = document.createElement("div"); el.className = "menu"; el.id = "fbbox"; el.style.cssText = "width:min(360px,calc(100vw - 32px));padding:14px;right:16px;top:60px";
+  const send = on(async () => { const t = ($("#fb_t").value || "").trim(); if (!t) return; await api("/api/feedback", { method: "POST", body: { text: t, page: location.hash.slice(1) || "/" } }); el.remove(); toast("Thanks. It went straight to the team building this."); });
+  el.innerHTML = `<div class="stack" style="gap:8px"><b>What's working, what isn't?</b><textarea id="fb_t" rows="5" placeholder="Anything: a bug, a missing piece, how your team works." style="width:100%;box-sizing:border-box"></textarea><div class="row"><button class="btn primary sm" data-on="${send}">Send</button><button class="btn sm ghost" data-on="${on(() => el.remove())}">Cancel</button><span class="xs muted">It includes which screen you're on.</span></div></div>`;
+  document.body.appendChild(el); $("#fb_t").focus();
 }
 
 const WIDGETS = {
@@ -1010,7 +1061,12 @@ async function teamView() {
   const role = on(async el => { await api(`/api/people/${el.dataset.id}`, { method: "PATCH", body: { role: el.value } }); toast("Role updated"); });
   const addp = on(async () => {
     const r = await api("/api/people", { method: "POST", body: { name: val("np_n"), email: val("np_e"), role: val("np_r") } });
-    $("#np_out").innerHTML = `<div class="secret"><b>Access token for ${esc(val("np_n"))}</b> <span class="muted">· ${esc(r.note)}</span><code class="mono">${esc(r.token)}</code></div>`;
+    const who = val("np_n"), email = val("np_e");
+    const msg = r.sign_in_with && r.sign_in_with.length ? `You're on ${S.me.tenant.name} in ${brand().product_name}. Sign in at ${r.sign_in_url} with ${r.sign_in_with.join(" or ")} using ${email}.` : "";
+    $("#np_out").innerHTML = msg ? `<div class="secret"><b>Send ${esc(who)} this</b><code class="mono" style="white-space:pre-wrap">${esc(msg)}</code><button class="btn xs" data-on="${on(async () => { try { await navigator.clipboard.writeText(msg); toast("Copied"); } catch (e) { toast("Select the text and copy it", true); } })}">Copy</button>
+      <details><summary class="xs">Access token instead (for AI tools or scripts)</summary><code class="mono">${esc(r.token)}</code></details></div>`
+      : `<div class="secret"><b>Access token for ${esc(who)}</b> <span class="muted">· ${esc(r.note)}</span><code class="mono">${esc(r.token)}</code></div>`;
+    reload();
   });
   page(`<div><h1>Team</h1><p class="lede">${plural(t.people.length, "person", "people")} carrying delivery hours · ${plural(p.deployments.length, "deployment")} · ${plural(t.unassigned.length, "item")} waiting for an owner</p></div>
     <div class="grid g4">
@@ -1792,7 +1848,7 @@ function startStream() {
     clearTimeout(timer);
     timer = setTimeout(async () => {
       const a = document.activeElement;
-      const busy = a && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) || document.querySelector("details[open] input:not([type=checkbox])") || $("#menu");
+      const busy = a && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) || document.querySelector("details[open] input:not([type=checkbox])") || $("#menu") || $("#fbbox");
       if (busy || document.visibilityState !== "visible") { refresh(); return; }
       const sc = document.querySelector(".scroll"); const top = sc ? sc.scrollTop : 0;
       invalidate(); await route();
@@ -1997,6 +2053,7 @@ applyBrand();
   try { const r = await fetch("/api/demo"); S.demo = r.ok; } catch (e) {}
   // One-click installs come back as ?connected=<provider> or ?oauth_error=<reason>.
   const qs = new URLSearchParams(location.search);
+  if (qs.has("login_error")) { const m = qs.get("login_error"); history.replaceState(null, "", location.pathname + (qs.has("signup") ? "?signup=1" : "")); setTimeout(() => toast(m, true), 300); }
   if (qs.has("connected") || qs.has("oauth_error")) {
     S.flash = { connected: qs.get("connected"), oauth_error: qs.get("oauth_error") };
     history.replaceState(null, "", location.pathname + location.hash);
@@ -2005,6 +2062,7 @@ applyBrand();
   const frag = new URLSearchParams(location.hash.slice(1));
   if (frag.has("session") || frag.has("sso_error") || frag.has("dep")) history.replaceState(null, "", location.pathname);
   if (frag.get("dep")) S.pendingDep = frag.get("dep");
+  if (frag.get("note")) { S.welcome = frag.get("note") === "welcome"; if (!S.welcome) setTimeout(() => toast(frag.get("note")), 800); }
   if (frag.get("session")) return act(signIn)(frag.get("session"));
   if (frag.get("sso_error")) { renderSignIn(); return toast(frag.get("sso_error"), true); }
   S.token ? act(signIn)(S.token) : renderSignIn();

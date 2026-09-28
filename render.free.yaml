@@ -1,30 +1,41 @@
-# A free, self-resetting demo on Render. New > Blueprint > pick this repo, and set the
-# Blueprint path to render.free.yaml.
+# The free public beta on Render: New > Blueprint > pick this repo, and set the Blueprint path to
+# render.free.yaml.
 #
-# Free web services sleep after 15 minutes idle and take about a minute to wake. The demo
-# keeps its data in SQLite on the service's own disk, which is wiped on every restart or
-# deploy; it seeds itself again on start and resets every hour anyway. That's right for a
-# demo and wrong for real work: use render.yaml (always on, Postgres) for that.
+# $0: Render's free web service plus a free Postgres from Neon (neon.tech), which doesn't expire.
+# Render's free service sleeps after 15 minutes idle and takes about a minute to wake, and its own disk
+# is wiped when it does, so everything that must last lives in Neon.
+#
+# Anyone can start a workspace (FIELDWORK_OPEN_SIGNUP=1). The shared demo workspace resets every hour;
+# beta workspaces on the same server are never touched by that reset.
 services:
   - type: web
-    name: fieldwork-demo
+    name: fieldwork
     plan: free
     runtime: python
-    buildCommand: pip install .
+    buildCommand: pip install ".[postgres]"
     startCommand: fieldwork migrate && fieldwork seed --if-empty && fieldwork serve --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
-      - key: FIELDWORK_DB
-        value: /tmp/fieldwork-demo.db
-      - key: FIELDWORK_KEY_FILE
-        value: /tmp/fieldwork-demo.key
-      - key: FIELDWORK_PUBLIC_URL       # the demo's https URL, e.g. https://fieldwork-demo.onrender.com
+      - key: FIELDWORK_DATABASE_URL     # Neon connection string: postgresql://...?sslmode=require
         sync: false
-      - key: FIELDWORK_ACCESS_PASSWORD  # optional: keep the demo private
+      - key: FIELDWORK_SECRET_KEYS      # a Fernet key; see LAUNCH.md. Keep a copy: it decrypts every stored token
         sync: false
+      - key: FIELDWORK_PUBLIC_URL       # this service's https URL, e.g. https://fieldwork.onrender.com
+        sync: false
+      - key: FIELDWORK_OPERATOR_TOKEN   # for /api/operator/metrics and /api/operator/feedback
+        generateValue: true
+      - key: FIELDWORK_OPEN_SIGNUP
+        value: "1"
+      - key: FIELDWORK_BETA_MAX_WORKSPACES
+        value: "200"
       - key: FIELDWORK_DEMO
         value: "1"
       - key: FIELDWORK_DEMO_RESET_MINUTES
         value: "60"
+      - key: FIELDWORK_DIGEST_HOUR_UTC
+        value: "12"
+      # Add as you register each app (docs/CONNECTIONS.md): FIELDWORK_GITHUB_CLIENT_ID / _CLIENT_SECRET
+      # (also turns on "Continue with GitHub"), FIELDWORK_SLACK_CLIENT_ID / _CLIENT_SECRET / _SIGNING_SECRET,
+      # FIELDWORK_GOOGLE_CLIENT_ID / _CLIENT_SECRET, and FIELDWORK_FEEDBACK_WEBHOOK to get feedback in Slack.

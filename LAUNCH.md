@@ -8,7 +8,12 @@ The code lives in a private repo. Render deploys from it once you connect GitHub
 
 ## 3. Deploy on Render
 
-**Free demo (no card needed):** New → Blueprint, pick the repo, and set the Blueprint path to `render.free.yaml`. You get a public demo that seeds itself, resets hourly and sleeps when idle (about a minute to wake). Its data lives on the service's own disk and is wiped on restart, which is fine for a demo and not for real work.
+**Free public beta ($0):** Render's free web service plus Neon's free Postgres.
+1. neon.tech: create a project and copy its connection string.
+2. Render: New → Blueprint, pick the repo, set the Blueprint path to `render.free.yaml`. Paste the Neon string as `FIELDWORK_DATABASE_URL`, a Fernet key as `FIELDWORK_SECRET_KEYS` (below), and the service's URL as `FIELDWORK_PUBLIC_URL`.
+3. Register a GitHub OAuth App (docs/CONNECTIONS.md) and add its client ID and secret: that turns on "Continue with GitHub" for sign-up and the live GitHub integration in one go.
+
+Anyone can then start a workspace from the sign-in page (or `/?signup=1`). The demo workspace resets hourly; beta workspaces are never touched by it. The free service sleeps after 15 idle minutes and takes about a minute to wake.
 
 **Always on (about $13/month: Starter web service + Basic Postgres):**
 1. In Render: **New → Blueprint**, pick the repo. `render.yaml` creates the web service and a Postgres database. The Slack digest and every connector sync run inside the web service.

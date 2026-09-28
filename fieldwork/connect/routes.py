@@ -85,8 +85,15 @@ def register(app, d) -> None:
 
     # ----------------------------------------------------------------- OAuth
 
+    def not_demo(c) -> None:
+        from .. import beta
+        if beta.is_demo_tenant(c.tenant_id):
+            raise HTTPException(403, "Connections are off in the shared demo. Start your own workspace to connect "
+                                     "your tools.")
+
     @app.post("/api/connections/{key}/start")
     def start(key: str, response: Response, c: Ctx = Depends(ctx)):
+        not_demo(c)
         p = the_provider(key)
         if not may_manage(c, p):
             raise HTTPException(403, "your role can't connect this" if not p.personal
@@ -114,10 +121,19 @@ def register(app, d) -> None:
             with db.tx(conn):
                 conn.execute("DELETE FROM oauth_states WHERE state=?", (state,))
         if not row or core.parse(row["created_at"]) < core.now() - timedelta(minutes=15):
+            if row and row["provider"].startswith("login:"):
+                return RedirectResponse("/?login_error=That+sign-in+took+too+long%3B+try+again", status_code=303)
             return back(False, oauth_error="That sign-in link expired. Start again from Integrations.")
         personal = bool(row["personal"])
+        login = row["provider"].startswith("login:")
         if not secrets.compare_digest(request.cookies.get("fw_oauth", ""), _cookie(state)):
+            if login:
+                return RedirectResponse("/?" + urlencode({"login_error": "Finish signing in in the same browser"
+                                                                         " you started in."}), status_code=303)
             return back(personal, oauth_error="Finish connecting in the same browser you started in.")
+        if login:  # sign-in and sign-up share this callback, so one app registration covers both
+            from .. import beta
+            return beta.finish_login(conn, row, code, error)
         p = REGISTRY.get(row["provider"])
         user = conn.execute("SELECT * FROM users WHERE id=? AND tenant_id=?", (row["user_id"], row["tenant_id"])).fetchone()
         if not p or not user:
@@ -151,6 +167,7 @@ def register(app, d) -> None:
 
     @app.post("/api/connections/{key}/token", status_code=201)
     def connect_token(key: str, body: TokenIn, c: Ctx = Depends(ctx)):
+        not_demo(c)
         p = the_provider(key)
         if p.auth != "token":
             raise HTTPException(409, f"{p.name} connects with its own sign-in")

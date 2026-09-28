@@ -408,6 +408,18 @@ ALTER TABLE opportunities ADD COLUMN connection_id TEXT;
 ALTER TABLE opportunities ADD COLUMN deployment_id TEXT;
 ALTER TABLE customers ADD COLUMN domains TEXT NOT NULL DEFAULT ''
 """),
+    (8, "open beta: sign-up, feedback", """
+ALTER TABLE oauth_states ADD COLUMN meta TEXT;
+ALTER TABLE tenants ADD COLUMN created_via TEXT NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS feedback (
+    id          {AUTO},
+    tenant_id   TEXT NOT NULL,
+    user_id     TEXT NOT NULL,
+    page        TEXT NOT NULL DEFAULT '',
+    text        TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+)
+"""),
 ]
 
 _AUTO = {"sqlite": "INTEGER PRIMARY KEY AUTOINCREMENT", "postgres": "BIGSERIAL PRIMARY KEY"}
@@ -416,19 +428,39 @@ _AUTO = {"sqlite": "INTEGER PRIMARY KEY AUTOINCREMENT", "postgres": "BIGSERIAL P
 class DB:
     """A connection plus its dialect. execute() takes '?' placeholders on both."""
 
-    def __init__(self, raw, dialect: str):
+    def __init__(self, raw, dialect: str, reopen=None):
         self.raw = raw
         self.dialect = dialect
         self.lock = threading.RLock()
         self._in_tx = 0
+        self._reopen = reopen  # Postgres: make a fresh connection (serverless databases drop idle ones)
 
     def _sql(self, sql: str) -> str:
         # Postgres placeholders are %s, so any literal % (e.g. LIKE 'x%') is escaped first.
         return sql.replace("%", "%%").replace("?", "%s") if self.dialect == "postgres" else sql
 
+    def _healthy(self) -> None:
+        """Outside a transaction, replace a connection the server has closed (Neon suspends idle
+        databases, managed Postgres restarts, networks blip)."""
+        if self._reopen and self._in_tx == 0 and (self.raw.closed or getattr(self.raw, "broken", False)):
+            self.raw = self._reopen()
+
     def execute(self, sql: str, params: tuple | list = ()):
         with self.lock:
-            return self.raw.execute(self._sql(sql), tuple(params))
+            self._healthy()
+            try:
+                return self.raw.execute(self._sql(sql), tuple(params))
+            except Exception as e:
+                import psycopg
+                if not (self._reopen and self._in_tx == 0
+                        and isinstance(e, (psycopg.OperationalError, psycopg.InterfaceError))):
+                    raise
+                try:
+                    self.raw.close()
+                except Exception:
+                    pass
+                self.raw = self._reopen()  # one retry on a fresh connection; outside a transaction it's safe
+                return self.raw.execute(self._sql(sql), tuple(params))
 
     def commit(self) -> None:
         if self.dialect == "sqlite":
@@ -443,8 +475,28 @@ class DB:
         """One write transaction. The lock also keeps the audit chain strictly ordered."""
         with self.lock:
             if self.dialect == "postgres":
-                with self.raw.transaction():
+                self._healthy()
+                import psycopg
+                outer = self._in_tx == 0
+                try:
+                    txn = self.raw.transaction()
+                    txn.__enter__()
+                except (psycopg.OperationalError, psycopg.InterfaceError):
+                    if not (outer and self._reopen):
+                        raise
+                    self.raw = self._reopen()  # the server dropped us while idle: begin on a fresh connection
+                    txn = self.raw.transaction()
+                    txn.__enter__()
+                self._in_tx += 1
+                try:
                     yield self
+                except BaseException as e:
+                    self._in_tx -= 1
+                    if not txn.__exit__(type(e), e, e.__traceback__):
+                        raise
+                else:
+                    self._in_tx -= 1
+                    txn.__exit__(None, None, None)
             else:
                 try:
                     yield self
@@ -470,8 +522,9 @@ def connect(url: str | None = None) -> DB:
     if url.startswith(("postgres://", "postgresql://")):
         import psycopg
         from psycopg.rows import dict_row
-        raw = psycopg.connect(url, row_factory=dict_row, autocommit=True)
-        return DB(raw, "postgres")
+        def reopen():
+            return psycopg.connect(url, row_factory=dict_row, autocommit=True)
+        return DB(reopen(), "postgres", reopen)
     path = url[len("sqlite:///"):] if url.startswith("sqlite:///") else url
     raw = sqlite3.connect(path, check_same_thread=False)
     raw.row_factory = sqlite3.Row
@@ -507,7 +560,7 @@ def init(conn: DB) -> None:
 
 def reset(conn: DB) -> None:
     """Drop everything. Used by `fieldwork seed` and tests; never by the API."""
-    tables = ["connections", "oauth_states", "inbound_events", "time_off", "contact_signals", "deployment_stages","delays", "time_entries", "opportunities", "flags", "approvals", "checklist_items", "outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
+    tables = ["feedback", "connections", "oauth_states", "inbound_events", "time_off", "contact_signals", "deployment_stages","delays", "time_entries", "opportunities", "flags", "approvals", "checklist_items", "outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
               "tasks", "stage_events", "deployment_members", "deployments", "customers", "users",
               "tenants", "schema_migrations"]
     with conn.lock:
