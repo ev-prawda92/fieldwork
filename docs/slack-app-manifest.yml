@@ -1,0 +1,40 @@
+# Slack: api.slack.com/apps -> Create New App -> From a manifest -> pick your workspace -> paste this.
+# Replace https://YOUR-SITE with FIELDWORK_PUBLIC_URL first.
+display_information:
+  name: Fieldwork
+  description: Deployment decisions, answered in Slack
+  background_color: "#1a1408"
+features:
+  bot_user:
+    display_name: Fieldwork
+    always_online: true
+  slash_commands:
+    - command: /fieldwork
+      url: https://YOUR-SITE/hooks/slack/command
+      description: What needs you, and where a deployment stands
+      usage_hint: today | status <deployment>
+      should_escape: false
+oauth_config:
+  redirect_urls:
+    - https://YOUR-SITE/oauth/callback
+  scopes:
+    bot:
+      - chat:write
+      - chat:write.public
+      - commands
+      - incoming-webhook
+      - users:read
+      - users:read.email
+      - im:write
+settings:
+  event_subscriptions:
+    request_url: https://YOUR-SITE/hooks/slack/events
+    bot_events:
+      - app_uninstalled
+      - tokens_revoked
+  interactivity:
+    is_enabled: true
+    request_url: https://YOUR-SITE/hooks/slack/interact
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

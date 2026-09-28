@@ -73,6 +73,8 @@ https://your-site/oauth/callback
 ```
 
 ### Slack
+Fastest: api.slack.com/apps → Create New App → From a manifest, and paste `docs/slack-app-manifest.yml` with your URL filled in; then set the three variables in step 6. By hand instead:
+
 1. api.slack.com/apps → Create New App → From scratch.
 2. OAuth & Permissions: add the redirect URL. Bot token scopes:
    `chat:write`, `chat:write.public`, `commands`, `incoming-webhook`,

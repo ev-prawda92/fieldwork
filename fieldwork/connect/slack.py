@@ -232,10 +232,17 @@ class Slack(Provider):
 
         @app.post("/hooks/slack/events", include_in_schema=False)
         async def slack_events(request: Request):
+            raw = await request.body()
+            try:
+                first = json.loads(raw or b"{}")
+            except ValueError:
+                raise HTTPException(400, "not JSON")
+            if isinstance(first, dict) and first.get("type") == "url_verification":
+                # Echoing the challenge reveals nothing, and Slack sends it while the app is being created,
+                # before its signing secret can be on this server. Everything else must be signed.
+                return {"challenge": str(first.get("challenge", ""))[:200]}
             _, body = await read(request)
             p = json.loads(body or b"{}")
-            if p.get("type") == "url_verification":
-                return {"challenge": p.get("challenge", "")}
             return await asyncio.to_thread(prov.on_event, conn, p)
 
         @app.post("/hooks/slack/interact", include_in_schema=False)

@@ -288,6 +288,10 @@ def test_slack_events_verification_and_uninstall(client, web):
     install(client, "slack")
     body = json.dumps({"type": "url_verification", "challenge": "abc"}).encode()
     assert client.post("/hooks/slack/events", content=body, headers=slack_sign(body)).json() == {"challenge": "abc"}
+    # Slack checks the URL while the app is being created, before its signing secret is on the server
+    assert client.post("/hooks/slack/events", content=body).json() == {"challenge": "abc"}
+    other = json.dumps({"type": "event_callback", "team_id": "T1", "event": {"type": "app_uninstalled"}}).encode()
+    assert client.post("/hooks/slack/events", content=other).status_code == 401
     body = json.dumps({"type": "event_callback", "team_id": "T1", "event_id": "Ev1",
                        "event": {"type": "app_uninstalled"}}).encode()
     client.post("/hooks/slack/events", content=body, headers=slack_sign(body))
