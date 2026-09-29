@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.egg-info
+*.db
+.pytest_cache
+.fieldwork_key
+tests

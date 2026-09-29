@@ -25,7 +25,7 @@ Fieldwork doesn't sell a methodology. It's the system of record teams build thei
 ```
 pip install -e ".[dev]"
 fieldwork engines                          # the built-in engines and their inputs
-fieldwork run census systems.csv           # run an engine on a file, no server
+fieldwork run census examples/data/systems.csv   # run an engine on a file, no server
 fieldwork seed                             # demo workspace
 FIELDWORK_DEMO=1 FIELDWORK_ALLOW_PRIVATE_ENGINES=1 fieldwork serve
 ```

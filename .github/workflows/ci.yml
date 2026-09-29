@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Tests
+        run: python -m pytest -q
+      - name: README quick start
+        run: |
+          fieldwork engines
+          # census exits 1 when it finds blockers, which the sample has on purpose
+          fieldwork run census examples/data/systems.csv > census.md || true
+          grep -q "Discovery findings" census.md
+          fieldwork seed
+
+  deploy-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t fieldwork:ci .
+      - name: Start the demo and check health
+        run: |
+          docker run -d --name fieldwork -p 8000:8000 -e FIELDWORK_DEMO=1 fieldwork:ci
+          for i in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:8000/api/health; then exit 0; fi
+            sleep 2
+          done
+          docker logs fieldwork
+          exit 1
