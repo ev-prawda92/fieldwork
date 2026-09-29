@@ -14,7 +14,7 @@ from fastapi import Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import db
+from .. import crypto, db
 from . import core, http
 from .core import REGISTRY, ConnectError, Runtime
 
@@ -77,6 +77,7 @@ def register(app, d) -> None:
                 people = None
             items.append({
                 "key": p.key, "name": p.name, "category": p.category, "personal": p.personal, "auth": p.auth,
+                "token_fields": list(p.token_fields), "tenant_app": p.tenant_app,
                 "configured": p.configured(), "verified": p.verified, "blurb": p.blurb, "setup": p.setup,
                 "env_needed": p.env_needed() if manage else [], "you_can_connect": may_manage(c, p),
                 "people_connected": people if manage else None,
@@ -91,8 +92,11 @@ def register(app, d) -> None:
             raise HTTPException(403, "Connections are off in the shared demo. Start your own workspace to connect "
                                      "your tools.")
 
+    class StartIn(BaseModel):
+        fields: dict[str, str] = Field(default={}, max_length=10)
+
     @app.post("/api/connections/{key}/start")
-    def start(key: str, response: Response, c: Ctx = Depends(ctx)):
+    def start(key: str, response: Response, body: StartIn | None = None, c: Ctx = Depends(ctx)):
         not_demo(c)
         p = the_provider(key)
         if not may_manage(c, p):
@@ -103,12 +107,18 @@ def register(app, d) -> None:
         if not p.configured():
             raise HTTPException(409, f"{p.name} needs app setup first: set {' and '.join(p.env_needed())}")
         state, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(48)
+        meta = None
+        if p.tenant_app:  # the app is registered inside the customer's own system (NetSuite): its keys come with the request
+            app_meta = p.start_meta({k: str(v).strip() for k, v in ((body.fields if body else {}) or {}).items()})
+            meta = crypto.encrypt(json.dumps(app_meta))
         with db.tx(conn):
-            conn.execute("INSERT INTO oauth_states (state, tenant_id, user_id, provider, personal, verifier, created_at)"
-                         " VALUES (?,?,?,?,?,?,?)", (state, c.tenant_id, c.uid, p.key, int(p.personal), verifier,
-                                                    core.iso(core.now())))
+            conn.execute("INSERT INTO oauth_states (state, tenant_id, user_id, provider, personal, verifier, created_at,"
+                         " meta) VALUES (?,?,?,?,?,?,?,?)", (state, c.tenant_id, c.uid, p.key, int(p.personal), verifier,
+                                                             core.iso(core.now()), meta))
         response.set_cookie("fw_oauth", _cookie(state), max_age=900, httponly=True, samesite="lax",
                             secure=core.public_url().startswith("https"), path="/oauth")
+        if p.tenant_app:
+            return {"url": p.start_url(app_meta, state, _challenge(verifier))}
         return {"url": p.authorize_url + "?" + urlencode(p.authorize_params(state, _challenge(verifier)))}
 
     def back(personal: bool, **q) -> RedirectResponse:
@@ -143,7 +153,10 @@ def register(app, d) -> None:
             return back(personal, oauth_error=f"{p.name} said: {error or 'no code returned'}")
         rt = Runtime(conn, row["tenant_id"])
         try:
-            tokens = p.exchange(code, row["verifier"])
+            if p.tenant_app:
+                tokens = p.exchange_meta(json.loads(crypto.decrypt(row["meta"])), code, row["verifier"])
+            else:
+                tokens = p.exchange(code, row["verifier"])
             ident = p.identify(rt, tokens)
         except (ConnectError, http.HTTPError) as e:
             return back(personal, oauth_error=str(e)[:300])
@@ -163,8 +176,9 @@ def register(app, d) -> None:
         return back(personal, connected=p.key)
 
     class TokenIn(BaseModel):
-        token: str = Field(min_length=4, max_length=500)
+        token: str = Field(default="", max_length=500)
         account: str = Field(default="", max_length=200)
+        fields: dict[str, str] = Field(default={}, max_length=10)
 
     @app.post("/api/connections/{key}/token", status_code=201)
     def connect_token(key: str, body: TokenIn, c: Ctx = Depends(ctx)):
@@ -175,7 +189,16 @@ def register(app, d) -> None:
         if not may_manage(c, p):
             raise HTTPException(403, "your role can't connect this")
         rt = Runtime(conn, c.tenant_id)
-        tokens = p.from_token(rt, body.token.strip(), body.account.strip())
+        if p.token_fields:
+            vals = {k: str(v).strip()[:1000] for k, v in body.fields.items()}
+            missing = [f["label"] for f in p.token_fields if f.get("required", True) and not vals.get(f["key"])]
+            if missing:
+                raise HTTPException(422, f"{p.name} needs: {', '.join(missing)}")
+            tokens = p.from_fields(rt, vals)
+        else:
+            if len(body.token.strip()) < 4:
+                raise HTTPException(422, "paste the token")
+            tokens = p.from_token(rt, body.token.strip(), body.account.strip())
         ident = p.identify(rt, tokens)
         with db.tx(conn):
             cx = core.create(conn, rt, p, user_id=c.uid if p.personal else None, created_by=c.uid,

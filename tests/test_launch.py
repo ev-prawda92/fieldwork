@@ -171,7 +171,7 @@ def test_github_two_way_sync(client):
                           json={"provider": "github", "target": "o/r"}).status_code == 200
         events.process(client.conn)
         links = client.get("/api/deployments/dep_northfield/links", headers=H("fde")).json()["links"]
-        assert len(links) == 5 and all(l["url"].startswith("https://github.com/o/r/issues/") for l in links.values())
+        assert len(links) == 7 and all(l["url"].startswith("https://github.com/o/r/issues/") for l in links.values())
         assert gh.calls[0][2]["Authorization"] == "Bearer ghp_x"
         # Fieldwork -> GitHub
         client.patch("/api/tasks/tsk_001", headers=H("fde"), json={"status": "done"})

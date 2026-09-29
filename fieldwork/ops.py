@@ -543,6 +543,8 @@ def apply_states(conn, tenant_id: str, cfg: dict, dep, changes: dict, actor: str
     if prim != dep["stage"]:
         conn.execute("INSERT INTO stage_events (tenant_id, deployment_id, from_stage, to_stage, actor_id, note, at)"
                      " VALUES (?,?,?,?,?,?,?)", (tenant_id, dep["id"], dep["stage"], prim, actor, note, ts))
+    from . import sow  # billable milestones follow their stage
+    sow.on_stage_states(conn, tenant_id, cfg, dep["id"], states, actor)
     return prim
 
 

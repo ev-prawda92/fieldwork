@@ -62,6 +62,10 @@ EVENTS = {
     "flag.raised": "A flag is raised on a deployment",
     "delay.opened": "A delay opens and needs an owner confirmed",
     "approval.requested": "An agent action is waiting for approval",
+    "milestone.ready": "A billable milestone is ready to submit for sign-off",
+    "milestone.submitted": "A milestone is waiting for the customer's sign-off",
+    "milestone.accepted": "The customer signed off a milestone (ready to invoice)",
+    "milestone.changes_requested": "The customer asked for changes before signing off",
 }
 TRACKERS = ("github", "linear", "jira")
 
@@ -94,6 +98,10 @@ ACTIONS = {
     "approval.decide":    "Approve or reject actions agents ask to take",
     "pipeline.view":      "See the sales pipeline and staffing checks",
     "pipeline.edit":      "Add and update pipeline opportunities",
+    "sow.edit":           "Set up statements of work and billable milestones, and record invoicing",
+    "milestone.submit":   "Submit a finished milestone for the customer's sign-off",
+    "milestone.accept":   "Sign off (or ask for changes to) a milestone, as the customer",
+    "billing.view":       "See contract value, billing status and what's ready to invoice",
 }
 
 DOERS = ("implementation_consultant", "fde", "ai_engineer")
@@ -138,6 +146,10 @@ DEFAULT_CONFIG: dict = {
         "approval.decide":    {"head": "all", "engagement_manager": "own"},
         "pipeline.view":      {"head": "all", "engagement_manager": "all"},
         "pipeline.edit":      {"head": "all", "engagement_manager": "all"},
+        "sow.edit":           {"head": "all", "engagement_manager": "own"},
+        "milestone.submit":   {"head": "all", "engagement_manager": "own"},
+        "milestone.accept":   {"customer": "own"},
+        "billing.view":       {"head": "all", "engagement_manager": "own"},
     },
     "views": {
         "head":                      ["kpis", "chain", "flags", "capacity", "delays", "findings", "pipeline"],
@@ -426,6 +438,9 @@ DERIVE = {
     "approval.decide": "finding.confirm",
     "pipeline.view": "people.read",
     "pipeline.edit": "deployment.create",
+    "sow.edit": "deployment.staff",
+    "milestone.submit": "deployment.staff",
+    "billing.view": "deployment.staff",
 }
 
 
@@ -437,6 +452,10 @@ def upgrade(cfg: dict) -> dict:
         if action not in perms:
             src = DERIVE.get(action)
             perms[action] = dict(perms.get(src, {})) if src else {}
+            if action == "milestone.accept":  # the customer-side roles: they see deployments but not internal work
+                internal = perms.get("task.view_internal", {})
+                perms[action] = {r: "own" for r, s in perms.get("deployment.view", {}).items()
+                                 if s and not internal.get(r)}
     cfg.setdefault("sso", default()["sso"])
     base_int = default()["integrations"]
     ints = cfg.setdefault("integrations", {})

@@ -300,7 +300,7 @@ def seed(db_url) -> dict:
 
 DEMO_TENANTS = ("ten_meridian", "ten_orbital")
 # Children before parents, so foreign keys hold on both databases.
-_TENANT_TABLES = ("feedback", "contact_signals", "time_off", "inbound_events", "oauth_states", "connections",
+_TENANT_TABLES = ("audit_anchors", "milestone_packets", "milestones", "sows", "feedback", "contact_signals", "time_off", "inbound_events", "oauth_states", "connections",
                   "checklist_items", "approvals", "flags", "opportunities", "time_entries", "delays", "reports",
                   "task_links", "outbox", "deployment_stages", "findings", "tasks", "stage_events")
 
@@ -655,3 +655,92 @@ def seed_operations(conn, T: str, ts: str) -> None:
         ins("findings", id=fid, tenant_id=T, deployment_id=dep, engine=eng, title=title, result_json=json.dumps(res),
             confirmed_by=conf, confirmed_at=TS(conf_ago) if conf else None, created_by=by, created_at=TS(ago),
             visibility="internal")
+    seed_commercials(conn, T, cfg)
+
+
+# (name, stage or None, amount, status, days ago submitted, days ago decided, invoice ref, days ago invoiced, paid days ago)
+NORTHFIELD_SOW = [
+    ("Discovery and solution design signed off", "discover", 60000, "paid", 88, 86, "INV-10231", 85, 60),
+    ("Integrations complete (NetSuite, AP inbox)", "integrate", 90000, "paid", 61, 59, "INV-10302", 58, 31),
+    ("UAT passed on customer data", "test", 90000, "invoiced", 49, 48, "INV-10388", 46, None),
+    ("Go-live across three sites", "golive", 120000, "accepted", 5, 3, None, None, None),
+    ("Adoption plan approved", None, 30000, "submitted", 1, None, None, None, None),
+    ("Value readout accepted by the CFO", "value", 30000, "pending", None, None, None, None, None),
+]
+HARBORVIEW_SOW = [
+    ("Discovery report", "discover", 75000, "ready", None, None, None, None, None),
+    ("Integration build complete", "integrate", 150000, "pending", None, None, None, None, None),
+    ("Pilot passed with payer test set", "test", 150000, "pending", None, None, None, None, None),
+    ("Production go-live", "golive", 235000, "pending", None, None, None, None, None),
+]
+KEYSTONE_SOW = [
+    ("Discovery", "discover", 30000, "paid", 146, 145, "KF-2201", 144, 120),
+    ("Integration and test", "test", 90000, "paid", 110, 108, "KF-2240", 107, 80),
+    ("Go-live", "golive", 80000, "paid", 102, 100, "KF-2262", 99, 70),
+    ("Value study confirmed", "value", 40000, "accepted", 12, 9, None, None, None),
+]
+
+
+def seed_commercials(conn, T: str, cfg: dict) -> None:
+    """Statements of work and billable milestones, with real evidence packets and sign-offs on the record."""
+    from . import sow as sow_mod
+    real_now = audit.now
+    criteria = {s["key"]: s.get("exit_criteria", "") for s in cfg["stages"]}
+    signer = {"dep_northfield": "usr_ruth", "dep_harborview": None, "dep_keystone": "usr_lena"}
+    plans = [("sow_nf1", "dep_northfield", "NSC-SOW-2026-014", 420000, 100, NORTHFIELD_SOW),
+             ("sow_hv1", "dep_harborview", "HVH-SOW-3", 610000, 28, HARBORVIEW_SOW),
+             ("sow_ks1", "dep_keystone", "KF-SOW-07", 240000, 160, KEYSTONE_SOW)]
+    for tid, title, who, ago in (("tsk_nf_plan", "Draft the site-by-site adoption plan (Harrisburg, Allentown, Reading)", "usr_rosa", 2),
+                                 ("tsk_nf_train", "Train AP leads at all three sites on the exception queue", "usr_rosa", 4)):
+        conn.execute("INSERT INTO tasks (id, tenant_id, deployment_id, stage, title, assignee_id, status, created_by,"
+                     " created_at, updated_at, visibility) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                     (tid, T, "dep_northfield", "adopt", title, who, "done", "usr_marcus", TS(ago + 10), TS(ago), "shared"))
+    try:
+        for sid, dep, ref, total, signed_ago, rows in plans:
+            conn.execute("INSERT INTO sows (id, tenant_id, deployment_id, reference, total_value, currency, signed_on,"
+                         " notes, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                         (sid, T, dep, ref, total, "USD", D(-signed_ago), "", "usr_marcus", TS(signed_ago),
+                          TS(signed_ago)))
+            for i, (name, stage, amount, status, sub, dec, inv, inv_ago, paid_ago) in enumerate(rows):
+                mid = f"ms_{sid[4:]}_{i + 1}"
+                conn.execute("INSERT INTO milestones (id, tenant_id, deployment_id, sow_id, name, amount, stage, criteria,"
+                             " position, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                             (mid, T, dep, sid, name, amount, stage,
+                              criteria.get(stage, "") if stage else "CFO signs the site-by-site adoption plan", i,
+                              "pending", TS(signed_ago), TS(signed_ago)))
+                if status == "ready":
+                    conn.execute("UPDATE milestones SET status='ready', ready_at=? WHERE id=?", (TS(2), mid))
+                if sub is None:
+                    continue
+                ms = conn.execute("SELECT * FROM milestones WHERE id=?", (mid,)).fetchone()
+                audit.now = lambda t=TS(sub): t
+                sow_mod.freeze(conn, T, cfg, ms, "usr_marcus", "", "milestone.submit")
+                conn.execute("UPDATE milestones SET status='submitted', submitted_at=?, submitted_by='usr_marcus'"
+                             " WHERE id=?", (TS(sub), mid))
+                if dec is None:
+                    continue
+                audit.now = lambda t=TS(dec): t
+                pk = sow_mod.current_packet(conn, mid)
+                who = signer[dep]
+                proxy = who != "usr_ruth"
+                note = "" if not proxy else "Signed off by email; PDF on the SharePoint deal folder"
+                audit.record(conn, T, who if not proxy else "usr_lena", "milestone.accept", mid,
+                             {"deployment": dep, "amount": amount, "customer_packet": pk["customer_hash"], "note": note,
+                              "on_behalf_of_customer": proxy})
+                sow_mod.anchor(conn, T, "milestone.accept", mid)
+                conn.execute("UPDATE milestones SET status='accepted', decided_at=?, decided_by=?, decision_note=?,"
+                             " proxy=? WHERE id=?", (TS(dec), who or "usr_lena", note, int(proxy), mid))
+                if inv:
+                    audit.now = lambda t=TS(inv_ago): t
+                    audit.record(conn, T, "erp:netsuite" if dep == "dep_northfield" else "usr_lena", "milestone.invoiced",
+                                 mid, {"deployment": dep, "amount": amount, "invoice_ref": inv, "on": D(-inv_ago)})
+                    conn.execute("UPDATE milestones SET status='invoiced', invoice_ref=?, invoiced_at=? WHERE id=?",
+                                 (inv, D(-inv_ago), mid))
+                if paid_ago is not None:
+                    audit.now = lambda t=TS(paid_ago): t
+                    audit.record(conn, T, "erp:netsuite" if dep == "dep_northfield" else "usr_lena", "milestone.paid",
+                                 mid, {"deployment": dep, "amount": amount, "invoice_ref": inv, "on": D(-paid_ago)})
+                    conn.execute("UPDATE milestones SET status='paid', paid_at=? WHERE id=?", (D(-paid_ago), mid))
+    finally:
+        audit.now = real_now
+

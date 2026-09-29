@@ -166,6 +166,28 @@ Google pushes calendar changes only to https addresses.
 4. Set `FIELDWORK_MICROSOFT_CLIENT_ID`, `FIELDWORK_MICROSOFT_CLIENT_SECRET`,
    and optionally `FIELDWORK_MICROSOFT_TENANT` (default `common`).
 
+## ERPs: the billing bridge
+
+A statement of work in Fieldwork can be linked to a project or contract in one ERP. When the customer signs off a
+milestone, the push is queued in the outbox in the same transaction (retried with backoff if the ERP is down, and
+retryable by hand from the milestone). Every hour the connection reads invoiced and paid back. You can also import a
+statement of work straight from the ERP project, which links both ways.
+
+| ERP | Connect with | Sign-off does | Comes back |
+| --- | --- | --- | --- |
+| NetSuite | OAuth 2.0 with PKCE, using an integration record in your own account (account ID, client ID, secret) | Completes the milestone's project task, so its milestone billing line can bill | Invoice matched by amount after the sign-off; paid when nothing is unpaid |
+| Certinia PSA | The Salesforce app | Status Approved and actual date; ticks Approved, Include In Financials, Approved for Billing where your org has them (settings) | Invoiced |
+| Oracle Fusion Cloud | Integration user over REST (host, user, password) | Creates a project billing event (our milestone id in SourceReference), or dates and releases a planned one | Invoiced |
+| SAP S/4HANA Cloud | Communication user (SAP_COM_0308 and billing documents) | Sets the milestone element's actual finish (CSRF token fetched first), which lifts the billing block on its plan date | Billing document; paid when cleared |
+| Workday | A custom report (RaaS) shared with an integration system user | Nothing written: point a signed `milestone.accepted` webhook at your Workday integration | Invoice and payment status from the report (column names are settings) |
+
+Details the vendors leave to each customer are settings, not guesses baked in: NetSuite's status id for a
+completed task (default `COMPLETE`), Oracle's billing event type and contract line, Certinia's approval fields, and
+Workday's report columns. If a value is wrong, the ERP's own answer shows on the milestone and on the connection.
+
+No ERP connected? The finance CSV and the `milestone.accepted` webhook carry the same facts: amount, sign-off,
+who and when, the evidence fingerprint and the record entry.
+
 ## Scheduling
 
 The web process runs the scheduler: it applies pending events, polls,

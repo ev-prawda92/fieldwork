@@ -424,6 +424,77 @@ CREATE TABLE IF NOT EXISTS feedback (
 ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE users ADD COLUMN deactivated_at TEXT
 """),
+    (10, "statements of work, billable milestones, customer sign-off, audit anchors", """
+CREATE TABLE IF NOT EXISTS sows (
+    id            TEXT PRIMARY KEY,
+    tenant_id     TEXT NOT NULL,
+    deployment_id TEXT NOT NULL REFERENCES deployments(id),
+    reference     TEXT NOT NULL DEFAULT '',
+    total_value   REAL NOT NULL DEFAULT 0,
+    currency      TEXT NOT NULL DEFAULT 'USD',
+    signed_on     TEXT,
+    notes         TEXT NOT NULL DEFAULT '',
+    external_id   TEXT,
+    connection_id TEXT,
+    created_by    TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_sows_dep ON sows(tenant_id, deployment_id);
+CREATE TABLE IF NOT EXISTS milestones (
+    id               TEXT PRIMARY KEY,
+    tenant_id        TEXT NOT NULL,
+    deployment_id    TEXT NOT NULL REFERENCES deployments(id),
+    sow_id           TEXT NOT NULL REFERENCES sows(id),
+    name             TEXT NOT NULL,
+    amount           REAL NOT NULL DEFAULT 0,
+    stage            TEXT,
+    criteria         TEXT NOT NULL DEFAULT '',
+    due_on           TEXT,
+    position         INTEGER NOT NULL DEFAULT 0,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    ready_at         TEXT,
+    submitted_at     TEXT,
+    submitted_by     TEXT,
+    decided_at       TEXT,
+    decided_by       TEXT,
+    decision_note    TEXT NOT NULL DEFAULT '',
+    proxy            INTEGER NOT NULL DEFAULT 0,
+    invoice_ref      TEXT,
+    invoiced_at      TEXT,
+    paid_at          TEXT,
+    external_id      TEXT,
+    erp_status       TEXT,
+    erp_error        TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_ms_dep ON milestones(tenant_id, deployment_id);
+CREATE INDEX IF NOT EXISTS ix_ms_status ON milestones(tenant_id, status);
+CREATE TABLE IF NOT EXISTS milestone_packets (
+    id             TEXT PRIMARY KEY,
+    tenant_id      TEXT NOT NULL,
+    milestone_id   TEXT NOT NULL REFERENCES milestones(id),
+    customer_json  TEXT NOT NULL,
+    internal_json  TEXT NOT NULL,
+    customer_hash  TEXT NOT NULL,
+    internal_hash  TEXT NOT NULL,
+    audit_seq      INTEGER,
+    audit_hash     TEXT,
+    created_by     TEXT NOT NULL,
+    created_at     TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit_anchors (
+    id          {AUTO},
+    tenant_id   TEXT NOT NULL,
+    seq         INTEGER NOT NULL,
+    hash        TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    subject     TEXT NOT NULL DEFAULT '',
+    at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_anchor_tenant ON audit_anchors(tenant_id, seq)
+"""),
 ]
 
 _AUTO = {"sqlite": "INTEGER PRIMARY KEY AUTOINCREMENT", "postgres": "BIGSERIAL PRIMARY KEY"}
@@ -564,7 +635,7 @@ def init(conn: DB) -> None:
 
 def reset(conn: DB) -> None:
     """Drop everything. Used by `fieldwork seed` and tests; never by the API."""
-    tables = ["feedback", "connections", "oauth_states", "inbound_events", "time_off", "contact_signals", "deployment_stages","delays", "time_entries", "opportunities", "flags", "approvals", "checklist_items", "outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
+    tables = ["audit_anchors", "milestone_packets", "milestones", "sows", "feedback", "connections", "oauth_states", "inbound_events", "time_off", "contact_signals", "deployment_stages","delays", "time_entries", "opportunities", "flags", "approvals", "checklist_items", "outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
               "tasks", "stage_events", "deployment_members", "deployments", "customers", "users",
               "tenants", "schema_migrations"]
     with conn.lock:

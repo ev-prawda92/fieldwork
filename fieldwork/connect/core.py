@@ -73,6 +73,8 @@ class Provider:
     blurb = ""
     setup = ""               # how to register the app, shown on the integrations page
     settings_fields: tuple = ()   # ({"key", "label", "type", "help"}, ...)
+    token_fields: tuple = ()      # token auth with several values: ({"key", "label", "secret", "help"}, ...)
+    tenant_app = False            # OAuth app registered inside the customer's own system, keys given at connect
 
     # -- app credentials
     def _env(self) -> str:
@@ -85,12 +87,12 @@ class Provider:
         return os.environ.get(f"FIELDWORK_{self._env()}_CLIENT_SECRET", "")
 
     def env_needed(self) -> list[str]:
-        if self.auth != "oauth":
+        if self.auth != "oauth" or self.tenant_app:
             return []
         return [f"FIELDWORK_{self._env()}_CLIENT_ID", f"FIELDWORK_{self._env()}_CLIENT_SECRET"]
 
     def configured(self) -> bool:
-        return self.auth != "oauth" or bool(self.client_id() and self.client_secret())
+        return self.auth != "oauth" or self.tenant_app or bool(self.client_id() and self.client_secret())
 
     # -- OAuth
     def authorize_params(self, state: str, challenge: str) -> dict:
@@ -127,6 +129,20 @@ class Provider:
 
     def from_token(self, rt, token: str, account: str) -> dict:
         """Token-auth providers: validate a pasted token -> tokens dict."""
+        raise ConnectError(f"{self.name} connects with its own sign-in")
+
+    def from_fields(self, rt, fields: dict) -> dict:
+        """Token-auth providers with token_fields: validate the values -> tokens dict (stored encrypted)."""
+        return self.from_token(rt, fields.get("token", ""), fields.get("account", ""))
+
+    # -- OAuth apps that live in the customer's system (tenant_app)
+    def start_meta(self, fields: dict) -> dict:
+        raise ConnectError(f"{self.name} connects with its own sign-in")
+
+    def start_url(self, meta: dict, state: str, challenge: str) -> str:
+        raise ConnectError(f"{self.name} connects with its own sign-in")
+
+    def exchange_meta(self, meta: dict, code: str, verifier: str) -> dict:
         raise ConnectError(f"{self.name} connects with its own sign-in")
 
     # -- lifecycle hooks (rt is a Runtime, cx a Conn)

@@ -17,11 +17,11 @@ from .conftest import H
 
 def test_customer_sees_only_shared_tasks(client):
     ids = {t["id"] for t in client.get("/api/tasks?deployment_id=dep_northfield", headers=H("customer")).json()}
-    assert ids == {"tsk_002", "tsk_004", "tsk_005"}
+    assert ids == {"tsk_002", "tsk_004", "tsk_005", "tsk_nf_plan", "tsk_nf_train"}
     team = {t["id"] for t in client.get("/api/tasks?deployment_id=dep_northfield", headers=H("fde")).json()}
     assert {"tsk_001", "tsk_003"} <= team
     d = client.get("/api/deployments/dep_northfield", headers=H("customer")).json()
-    assert sum(d["tasks"].values()) == 3 and d["staffing_req"] == ""
+    assert sum(d["tasks"].values()) == 5 and d["staffing_req"] == ""
 
 
 def test_customer_can_work_their_own_shared_task_but_not_internal_ones(client):

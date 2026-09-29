@@ -947,7 +947,7 @@ function ownersPanel(r) {
     ${(r.priors || []).filter(x => x.overrides_default).map(x => `<div class="small text2" style="border-top:1px solid var(--line);padding-top:10px"><span class="label">Learned</span> ${esc(x.explain)}</div>`).join("")}</div>`;
 }
 async function portfolioView() {
-  const p = await api("/api/portfolio");
+  const [p, billing] = await Promise.all([api("/api/portfolio"), billingPanel().catch(() => "")]);
   const k = p.kpis || {};
   const max = Math.max(...p.stage_medians.map(s => Math.max(s.median_days || 0, s.target_days || 0)), 1);
   const worst = p.stage_medians.filter(s => s.median_days != null).sort((a, b) => (b.median_days / b.target_days) - (a.median_days / a.target_days))[0];
@@ -970,6 +970,7 @@ async function portfolioView() {
         <div class="small muted">Bar is the median across finished stages; the tick is your target.${worst && worst.median_days > worst.target_days ? ` ${esc(worst.name)} is where deployments slip.` : ""}</div></div>
       ${ownersPanel({ ...p.delays, priors: [] })}
     </div>
+    ${billing}
     ${chainTable(p)}`);
 }
 
@@ -1221,6 +1222,7 @@ async function depOverview(d, row, reload) {
     api(`/api/tasks?deployment_id=${encodeURIComponent(id)}`), api(`/api/deployments/${id}/links`), api(`/api/deployments/${id}/reports`),
     api(`/api/flags?deployment_id=${encodeURIComponent(id)}`), api(`/api/delays?deployment_id=${encodeURIComponent(id)}`),
     can("people.read") ? api("/api/people").then(r => r.filter(x => x.active !== 0)) : []]);
+  const [cm, erps] = await Promise.all([api(`/api/deployments/${id}/commercials`), yc("sow.edit") ? api("/api/billing/connections").catch(() => []) : []]);
   const stage = stageOf(d.stage);
   const open = tasks.filter(t => t.status !== "done");
   const addTask = on(async () => {
@@ -1271,6 +1273,7 @@ async function depOverview(d, row, reload) {
             <input id="ntd" type="date" aria-label="Due" style="width:150px">
             ${yc("customer.share") ? `<label class="row small muted" style="gap:4px"><input type="checkbox" id="nts"> share</label>` : ""}
             <button class="btn" data-on="${addTask}">Add</button></div>` : ""}</div>
+        ${commercialsHtml(d, cm, reload, erps)}
         <div class="panel"><div class="phead"><div class="label">Status reports</div><div class="row">
           ${yc("report.create") ? `<button class="btn sm" data-on="${on(() => draftReport(id, "internal"))}">Draft internal</button><button class="btn sm" data-on="${on(() => draftReport(id, "customer"))}">Draft for customer</button>` : ""}</div></div>
           ${reportsHtml(reps, yc("customer.share"), reload)}</div>
@@ -1335,14 +1338,165 @@ function syncCard(sync, yc, go_) {
       <input id="synct" placeholder="${esc(hint[sync.provider || enabled[0]])}" value="${esc(sync.target || "")}" style="flex:1;min-width:100px"><button class="btn sm" data-on="${go_}">Save</button></div>` : ""}</div>`;
 }
 
+/* ============================================ commercials: SOWs, billable milestones, sign-off */
+const cash = (v, cur) => v == null ? "—" : new Intl.NumberFormat(undefined, { style: "currency", currency: cur || "USD", maximumFractionDigits: v % 1 ? 2 : 0 }).format(v);
+const MS_STATUS = { pending: ["IN DELIVERY", ""], ready: ["READY TO SUBMIT", "blue"], submitted: ["AWAITING SIGN-OFF", "warn"], changes_requested: ["CHANGES ASKED", "bad"], accepted: ["SIGNED OFF · TO INVOICE", "good"], invoiced: ["INVOICED", "purple"], paid: ["PAID", "good"] };
+const MS_CUSTOMER = { pending: ["IN PROGRESS", ""], ready: ["IN PROGRESS", ""], submitted: ["NEEDS YOUR SIGN-OFF", "warn"], changes_requested: ["CHANGES REQUESTED", "bad"], accepted: ["SIGNED OFF", "good"], invoiced: ["SIGNED OFF", "good"], paid: ["SIGNED OFF", "good"] };
+const shortHash = h => h ? String(h).replace("sha256:", "").slice(0, 12) : "";
+
+function receiptHtml(pk) {
+  if (!pk || !pk.anchor_seq) return "";
+  const check = on(async () => {
+    const r = await api("/api/audit/verify-anchor", { method: "POST", body: { seq: pk.anchor_seq, hash: pk.anchor_hash } });
+    toast(r.ok ? `Matches the record: entry ${r.seq}, ${fmtDateY(r.at)}` : `Doesn't match the record: ${r.reason}`, !r.ok);
+  });
+  return `<span class="row nowrap" style="gap:4px;flex-wrap:wrap"><span class="xs muted mono" title="Keep this: the evidence fingerprint and the record entry it was written into. Anyone in the workspace can check it later.">evidence ${esc(shortHash(pk.customer_hash))} · record #${pk.anchor_seq} ${esc(shortHash(pk.anchor_hash))}</span><button class="btn xs ghost" data-on="${check}">Check</button></span>`;
+}
+
+async function showPacket(mid, boxId) {
+  const box = document.getElementById(boxId); if (!box) return;
+  if (box.dataset.open) { box.innerHTML = ""; delete box.dataset.open; return; }
+  const r = await api(`/api/milestones/${mid}/packet`); const p = r.packet;
+  box.dataset.open = "1";
+  box.innerHTML = `<div class="panel sunk" style="padding:12px 14px;gap:8px;margin-top:6px">
+    <div class="row nowrap"><span class="label" style="flex:1">Evidence frozen ${esc(fmtDateY(p.submitted.at))} · ${esc(p.submitted.by)}</span><span class="chip ${r.intact ? "good" : "bad"}" style="font-size:10px">${r.intact ? "INTACT" : "ALTERED"}</span></div>
+    ${p.milestone.criteria ? `<div class="small"><b>Acceptance criteria.</b> ${esc(p.milestone.criteria)}</div>` : ""}
+    ${p.submitted.note ? `<div class="small text2">${esc(p.submitted.note)}</div>` : ""}
+    <div class="small"><b>Stages.</b> ${p.stages.map(s => `${esc(s.name)} <span class="muted">${s.state === "done" ? "done " + esc(fmtDate(s.done)) : esc(s.state.replace("_", " "))}</span>`).join(" · ")}</div>
+    <div class="small"><b>Work finished</b> <span class="muted">(${p.work_done.length})</span>${p.work_done.slice(0, 15).map(t => `<div class="li">• ${esc(t.title)} <span class="muted xs">${esc(fmtDate(t.done_at))}</span></div>`).join("") || `<div class="muted xs">None listed for this milestone.</div>`}</div>
+    ${p.results.length ? `<div class="small"><b>Confirmed results</b>${p.results.map(f => `<div class="li">• ${esc(f.title)}${f.summary ? `: <span class="text2">${esc(f.summary)}</span>` : ""}</div>`).join("")}</div>` : ""}
+    ${p.audience === "internal" ? `<div class="small muted">Internal copy · ${num(p.hours_logged)} h logged${p.budget_hours ? ` of ${num(p.budget_hours)}` : ""}${p.delays.length ? ` · delays: ${p.delays.map(x => `${esc(x.owner)} ${num(x.days)} d`).join(", ")}` : ""}</div>` : ""}
+    <div class="xs muted mono" style="word-break:break-all;line-height:1.5">Customer evidence ${esc(r.customer_hash)}<br>Record entry #${r.receipt.record_position} · ${esc(r.receipt.record_hash || "")}</div></div>`;
+}
+
+function parseMilestones(text) {
+  return String(text || "").split("\n").map(l => l.trim()).filter(Boolean).map(l => {
+    const [name, amount, stage] = l.split(/\s*[,|;]\s*/);
+    const st = (stage || "").toLowerCase();
+    const hit = S.cfg.stages.find(s => s.key === st || s.name.toLowerCase() === st);
+    return { name, amount: +String(amount || "0").replace(/[^0-9.]/g, "") || 0, stage: hit ? hit.key : null };
+  });
+}
+
+function commercialsHtml(d, cm, reload, erps) {
+  const yc = cm.you_can; const mayEdit = yc["sow.edit"], maySubmit = yc["milestone.submit"];
+  if (!cm.sows.length && !mayEdit) return "";
+  const post = (path, body, msg) => on(async () => { await api(path, { method: "POST", body }); toast(msg); reload(); });
+  const msRow = m => {
+    const [lab, cls] = MS_STATUS[m.status] || [upper(m.status), ""]; const bid = "pk_" + m.id;
+    let acts = "";
+    if (maySubmit && (["ready", "changes_requested"].includes(m.status) || (m.status === "pending" && !m.stage)))
+      acts += `<button class="btn xs primary" data-on="${post(`/api/milestones/${m.id}/submit`, {}, "Submitted. The evidence is frozen and the customer can sign off.")}">${m.status === "changes_requested" ? "Resubmit" : "Submit for sign-off"}</button>`;
+    if (mayEdit && (["submitted", "ready", "changes_requested"].includes(m.status) || (m.status === "pending" && !m.stage))) {
+      const rec = on(async () => { const note = val("px_" + m.id); if (!note || note.length < 3) { toast("Say how the customer signed off", true); return; } await api(`/api/milestones/${m.id}/record-acceptance`, { method: "POST", body: { note } }); toast("Sign-off recorded, marked as recorded on their behalf"); reload(); });
+      acts += `<details><summary class="small">Signed off elsewhere?</summary><div class="row nowrap" style="margin-top:6px"><input id="px_${m.id}" placeholder="How: e.g. email from Ruth, Sep 12" style="flex:1;min-width:160px;height:28px"><button class="btn xs" data-on="${rec}">Record</button></div></details>`;
+    }
+    if (mayEdit && m.status === "accepted") acts += `<input id="inv_${m.id}" placeholder="Invoice #" aria-label="Invoice number" style="width:110px;height:28px"><button class="btn xs" data-on="${on(async () => { await api(`/api/milestones/${m.id}/invoiced`, { method: "POST", body: { invoice_ref: val("inv_" + m.id) || "" } }); toast("Marked invoiced"); reload(); })}">Invoiced</button>`;
+    if (mayEdit && m.status === "invoiced") acts += `<button class="btn xs" data-on="${post(`/api/milestones/${m.id}/paid`, {}, "Marked paid")}">Paid</button>`;
+    if (mayEdit && m.erp_status === "error") acts += `<button class="btn xs" data-on="${on(async () => { const r = await api(`/api/milestones/${m.id}/push`, { method: "POST" }); toast(r.erp_status === "sent" ? "Sent to the ERP" : `Still failing: ${r.erp_error || r.erp_status}`, r.erp_status !== "sent"); reload(); })}">Retry ERP</button>`;
+    if (m.packet) acts += `<button class="btn xs ghost" data-on="${on(() => showPacket(m.id, bid))}">Evidence</button>`;
+    const sub = [m.stage_name ? `bills when ${esc(m.stage_name)} is done` : "milestone you mark done", m.due_on ? `due ${esc(fmtDate(m.due_on))}` : "",
+      m.decided_by && ["accepted", "invoiced", "paid"].includes(m.status) ? `signed off by ${esc(m.decided_by)}${m.proxy ? " (recorded)" : ""} ${esc(fmtDate(m.decided_at))}` : "",
+      m.invoice_ref ? `invoice ${esc(m.invoice_ref)}` : "", m.erp_status ? `ERP ${esc(m.erp_status.replace("_", " "))}` : ""].filter(Boolean).join(" · ");
+    return `<div style="border-top:1px solid var(--line2);padding:9px 0 7px" class="stack"><div class="row nowrap" style="gap:10px;align-items:flex-start"><div style="flex:1;min-width:0"><div style="font-size:13.5px;font-weight:500">${esc(m.name)}</div><div class="xs muted">${sub}</div>
+        ${m.status === "changes_requested" && m.decision_note ? `<div class="xs bad">Customer: “${esc(m.decision_note)}”</div>` : ""}${m.erp_error ? `<div class="xs bad">${esc(m.erp_error)}</div>` : ""}</div>
+        <span class="mono small" style="white-space:nowrap">${m.amount != null ? cash(m.amount, m.currency) : ""}</span><span class="chip ${cls}" style="font-size:10px;white-space:nowrap">${lab}</span></div>
+      ${acts ? `<div class="row" style="gap:6px;align-items:center">${acts}</div>` : ""}<div id="${bid}"></div></div>`;
+  };
+  const addTo = s => {
+    if (!mayEdit) return "";
+    const go_ = on(async () => { const name = val("nm_" + s.id); if (!name) return; await api(`/api/sows/${s.id}/milestones`, { method: "POST", body: { name, amount: +val("na_" + s.id) || 0, stage: val("ns_" + s.id) || null } }); toast("Milestone added"); reload(); });
+    return `<details><summary class="small">Add a milestone</summary><div class="row nowrap" style="margin-top:6px;gap:6px"><input id="nm_${s.id}" placeholder="Name" style="flex:1;min-width:120px"><input id="na_${s.id}" type="number" min="0" placeholder="Amount" style="width:110px"><select id="ns_${s.id}" aria-label="Stage" style="width:auto"><option value="">Mark done by hand</option>${S.cfg.stages.map(st => `<option value="${esc(st.key)}">When ${esc(st.name)} is done</option>`).join("")}</select><button class="btn sm" data-on="${go_}">Add</button></div></details>`;
+  };
+  const t = cm.totals;
+  const kpis = t ? `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px">${[["Contract", t.contract, ""], ["Earned", t.earned, "signed off"], ["To invoice", t.ready_to_invoice, "signed off, not invoiced"], ["Awaiting sign-off", t.awaiting_signoff, "with the customer"], ["Ready to submit", t.ready_to_submit, "stage done"]].map(([k, v, h]) => `<div class="sub-card" style="padding:8px 10px;gap:2px" title="${esc(h)}"><div class="label" style="font-size:9.5px">${k}</div><div class="mono" style="font-size:15px;font-weight:600">${cash(v, cm.currency)}</div></div>`).join("")}</div>` : "";
+  const sows = cm.sows.map(s => `<div class="stack" style="gap:2px"><div class="row nowrap small" style="justify-content:space-between"><span><b>${esc(s.reference || "Statement of work")}</b>${s.signed_on ? ` <span class="muted">· signed ${esc(fmtDateY(s.signed_on))}</span>` : ""}${s.connection_id ? ` <span class="chip line" style="font-size:9.5px">ERP-LINKED</span>` : ""}</span>${s.total_value != null ? `<span class="mono xs muted">${cash(s.allocated, s.currency)} of ${cash(s.total_value, s.currency)} in milestones</span>` : ""}</div>
+      ${s.milestones.map(msRow).join("") || `<div class="small muted">No milestones yet.</div>`}${addTo(s)}</div>`).join("");
+  let form = "";
+  if (mayEdit) {
+    const addSow = on(async () => {
+      const ms = parseMilestones(val("sw_ms"));
+      const r = await api(`/api/deployments/${d.id}/sows`, { method: "POST", body: { reference: val("sw_ref") || "", total_value: +val("sw_tot") || 0, currency: val("sw_cur") || "USD", signed_on: val("sw_on") || null, milestones: ms } });
+      toast(r.unallocated > 0 ? `Saved. ${cash(r.unallocated, val("sw_cur"))} isn't in a milestone yet.` : "Statement of work saved"); reload();
+    });
+    const erpBox = "erp_" + d.id;
+    const loadProjects = on(async () => {
+      const cid = val("erp_c"); if (!cid) return;
+      const projs = await api(`/api/billing/connections/${cid}/projects`);
+      const box = document.getElementById(erpBox);
+      const imp = on(async () => { const r = await api(`/api/deployments/${d.id}/sows/import`, { method: "POST", body: { connection_id: cid, project_id: val("erp_p") } }); toast(`Imported ${plural(r.milestones, "milestone")}. ${r.note}`); reload(); });
+      box.innerHTML = projs.length ? `<div class="row nowrap" style="gap:6px"><select id="erp_p" style="flex:1">${projs.map(p => `<option value="${esc(p.id)}">${esc(p.name)}${p.customer ? " · " + esc(p.customer) : ""}</option>`).join("")}</select><button class="btn sm" data-on="${imp}">Import</button></div>` : `<div class="xs muted">No projects found there. Link one by id instead.</div>`;
+    });
+    form = `<details ${cm.sows.length ? "" : "open"}><summary class="small">${cm.sows.length ? "Add another statement of work" : "Set up the statement of work"}</summary><div class="formgrid" style="margin-top:10px">
+        <label class="field"><span>Reference</span><input id="sw_ref" placeholder="SOW-2026-014"></label>
+        <label class="field"><span>Signed</span><input id="sw_on" type="date"></label>
+        <label class="field"><span>Contract value</span><input id="sw_tot" type="number" min="0" placeholder="blank = sum of milestones"></label>
+        <label class="field"><span>Currency</span><select id="sw_cur">${["USD", "EUR", "GBP", "CAD", "AUD", "JPY", "CHF", "SGD", "INR"].map(c => `<option>${c}</option>`).join("")}</select></label>
+        <label class="field" style="grid-column:1/-1"><span>Milestones · one per line: name, amount, stage it bills on (optional)</span><textarea id="sw_ms" rows="4" placeholder="Discovery readout, 60000, Discover&#10;Go-live, 120000, Go-live&#10;Adoption plan approved, 30000"></textarea></label>
+        <div><button class="btn primary sm" data-on="${addSow}">Save</button></div></div>
+      ${erps.length ? `<div class="stack" style="gap:6px;margin-top:10px;border-top:1px solid var(--line2);padding-top:10px"><div class="label" style="font-size:10px">Or import it from your ERP</div><div class="row nowrap" style="gap:6px"><select id="erp_c" style="flex:1">${erps.map(c => `<option value="${esc(c.id)}">${esc(c.name)} · ${esc(c.account_name)}</option>`).join("")}</select><button class="btn sm" data-on="${loadProjects}">Find projects</button></div><div id="${erpBox}"></div></div>` : ""}</details>`;
+  }
+  return `<div class="panel"><div class="phead"><div class="label">Commercials · what the work is worth</div>${cm.waiting_on_customer.length ? `<span class="chip warn" style="font-size:10px">${cm.waiting_on_customer.length} WITH CUSTOMER</span>` : ""}</div>
+    ${kpis}${sows}${form}</div>`;
+}
+
+function customerCommercialsHtml(d, cm, reload) {
+  const w = cm.where; const all = cm.sows.flatMap(s => s.milestones);
+  const next = all.find(m => !["accepted", "invoiced", "paid"].includes(m.status));
+  const accept = m => on(async () => {
+    await api(`/api/milestones/${m.id}/accept`, { method: "POST", body: { packet_hash: m.packet.customer_hash, note: val("an_" + m.id) || "" } });
+    toast("Signed off. Your receipt is on the milestone."); reload();
+  });
+  const changes = m => on(async () => {
+    const note = val("an_" + m.id); if (!note) { toast("Say what needs to change", true); return; }
+    await api(`/api/milestones/${m.id}/request-changes`, { method: "POST", body: { packet_hash: m.packet.customer_hash, note } });
+    toast("Sent back with your note"); reload();
+  });
+  const row = m => {
+    const [lab, cls] = MS_CUSTOMER[m.status] || [upper(m.status), ""]; const bid = "pk_" + m.id;
+    const mayAccept = cm.you_can["milestone.accept"] && m.status === "submitted" && m.packet;
+    return `<div class="stack" style="border-top:1px solid var(--line2);padding:10px 0 8px;gap:6px"><div class="row nowrap" style="gap:10px;align-items:flex-start"><div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:500">${esc(m.name)}</div>
+        <div class="xs muted">${[m.stage_name ? `after ${esc(m.stage_name)}` : "", m.criteria ? esc(m.criteria) : "", ["accepted", "invoiced", "paid"].includes(m.status) && m.decided_at ? `signed off ${esc(fmtDateY(m.decided_at))}${m.decided_by ? " by " + esc(m.decided_by) : ""}` : ""].filter(Boolean).join(" · ")}</div></div>
+        ${m.amount != null ? `<span class="mono small">${cash(m.amount, m.currency)}</span>` : ""}<span class="chip ${cls}" style="font-size:10px;white-space:nowrap">${lab}</span></div>
+      ${m.packet ? `<div class="row" style="gap:6px;align-items:center"><button class="btn xs ${mayAccept ? "" : "ghost"}" data-on="${on(() => showPacket(m.id, bid))}">${mayAccept ? "Review the evidence" : "Evidence"}</button>${["accepted", "invoiced", "paid"].includes(m.status) ? receiptHtml(m.packet) : ""}</div>` : ""}<div id="${bid}"></div>
+      ${mayAccept ? `<div class="row" style="gap:6px"><input id="an_${m.id}" placeholder="Note (required if you're asking for changes)" style="flex:1;min-width:140px"><button class="btn primary sm" data-on="${accept(m)}">Sign off</button><button class="btn sm" data-on="${changes(m)}">Ask for changes</button></div>` : ""}
+      ${m.status === "changes_requested" && m.decision_note ? `<div class="xs text2">You asked: “${esc(m.decision_note)}”. The team will resubmit.</div>` : ""}</div>`;
+  };
+  return `<div class="panel" style="gap:10px"><div class="phead"><div class="label">Where we are</div><span class="mono xs muted">stage ${w.done + (w.done < w.total ? 1 : 0)} of ${w.total}</span></div>
+      <div style="font-size:15px">In <b>${esc(w.current)}</b>${w.on_hold ? ` <span class="chip warn" style="font-size:10px">PAUSED</span>` : ""}${next ? ` · next milestone: <b>${esc(next.name)}</b>` : all.length ? " · every milestone is signed off" : ""}</div>
+      ${bar(w.done / Math.max(1, w.total), "var(--good)", "thin")}
+      ${cm.waiting_on_customer.length ? `<div class="small warn">${plural(cm.waiting_on_customer.length, "milestone is", "milestones are")} waiting for your sign-off.</div>` : ""}
+      ${cm.sows.map(s => `<div class="stack" style="gap:0"><div class="small muted" style="margin-top:6px">${esc(s.reference || "Statement of work")}${s.total_value != null ? ` · ${cash(s.total_value, s.currency)}` : ""}</div>${s.milestones.map(row).join("")}</div>`).join("") || `<div class="small muted">Milestones will show here once the statement of work is set up.</div>`}</div>`;
+}
+
+async function billingPanel() {
+  if (!can("billing.view")) return "";
+  const b = await api("/api/commercials"); const t = b.totals; const cur = b.currencies.length === 1 ? b.currencies[0] : "USD";
+  if (!t.contract && !b.ready_to_invoice.length && !b.awaiting_signoff.length) return "";
+  const csv = on(async () => {
+    const r = await fetch("/api/commercials.csv", { headers: { Authorization: "Bearer " + S.token } });
+    if (!r.ok) { toast("Couldn't export", true); return; }
+    const url = URL.createObjectURL(await r.blob()); const a = document.createElement("a");
+    a.href = url; a.download = `billing-${todayIso()}.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  });
+  const list = (items, empty) => items.slice(0, 8).map(i => `<div class="row nowrap small" style="border-top:1px solid var(--line2);padding-top:7px"><a href="#/dep/${esc(i.deployment_id)}" style="flex:1;min-width:0;color:inherit">${esc(i.name)} <span class="muted">· ${esc(i.customer || i.deployment)}</span></a><span class="mono">${cash(i.amount, i.currency)}</span></div>`).join("") || `<div class="small muted">${empty}</div>`;
+  return `<div class="panel" style="gap:12px"><div class="phead"><div class="label">Billing · from delivery to cash</div><button class="btn sm" data-on="${csv}">Export for finance (CSV)</button></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px">${[["Under contract", t.contract], ["Earned", t.earned], ["Ready to invoice", t.ready_to_invoice], ["Awaiting sign-off", t.awaiting_signoff], ["Invoiced", t.invoiced], ["Paid", t.paid]].map(([k, v]) => `<div class="sub-card" style="padding:10px 12px;gap:4px"><div class="label" style="font-size:10px">${k}</div><div class="mono" style="font-size:18px;font-weight:600">${cash(v, cur)}</div></div>`).join("")}</div>
+    ${b.currencies.length > 1 ? `<div class="xs muted">Totals mix ${b.currencies.join(", ")}; the CSV has each milestone in its own currency.</div>` : ""}
+    <div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)"><div class="stack" style="gap:6px"><div class="label" style="font-size:10px">Signed off, ready to invoice</div>${list(b.ready_to_invoice, "Nothing waiting on finance.")}</div>
+      <div class="stack" style="gap:6px"><div class="label" style="font-size:10px">With the customer for sign-off</div>${list(b.awaiting_signoff, "Nothing waiting on customers.")}</div></div>
+    ${b.overdue.length ? `<div class="small bad">${plural(b.overdue.length, "milestone is", "milestones are")} past due and not signed off.</div>` : ""}</div>`;
+}
+
 async function customerOverview(d, row, reload) {
-  const [tasks, findings, reps] = await Promise.all([api(`/api/tasks?deployment_id=${encodeURIComponent(d.id)}`), api(`/api/deployments/${d.id}/findings`), api(`/api/deployments/${d.id}/reports`)]);
+  const [tasks, findings, reps, cm] = await Promise.all([api(`/api/tasks?deployment_id=${encodeURIComponent(d.id)}`), api(`/api/deployments/${d.id}/findings`), api(`/api/deployments/${d.id}/reports`), api(`/api/deployments/${d.id}/commercials`)]);
   const mine = tasks.filter(t => t.assignee_id === S.me.user.id);
   page(`<div><div class="label">${esc(d.customer)} · with ${esc(S.me.tenant.name)}</div><h1 style="margin-top:4px">${esc(d.name)}</h1>
       <p class="lede">Currently in <b>${esc(stageName(d.stage))}</b>: ${esc(stageOf(d.stage).exit_criteria)}</p></div>
     ${stepper(d, row)}
     <div class="grid g-main">
       <div class="stack lg">
+        ${customerCommercialsHtml(d, cm, reload)}
         <div class="panel" style="gap:4px"><div class="label" style="margin-bottom:6px">What we need from you · ${mine.filter(t => t.status !== "done").length}</div>${mine.map(t => taskRow(t, { showDep: false, reload, showShared: false })).join("") || `<div class="small muted">Nothing right now.</div>`}</div>
         <div class="panel" style="gap:4px"><div class="label" style="margin-bottom:6px">Shared plan</div>${tasks.filter(t => t.assignee_id !== S.me.user.id).map(t => taskRow(t, { showDep: false, reload, showShared: false })).join("") || `<div class="small muted">Nothing shared yet.</div>`}</div>
       </div>
@@ -1595,6 +1749,31 @@ const TOOLS = [
       map: [["opportunity", "deal"], ["amount", "value"], ["probability", "probability"], ["id", "upsert key"]],
       auto: ["Re-importing updates deals by their CRM id"], powers: ["Pipeline"], guard: "For CRMs without a live connection.", importKind: "pipeline" },
   ] },
+  { group: "Billing and ERP", why: "A customer's sign-off becomes an invoice, and paid comes back.", items: [
+    { key: "netsuite", name: "NetSuite", ini: "NS", color: "#6fa8dc", role: "Milestone billing", dir: "Both ways", sync: "On sign-off; invoices hourly", auth: "OAuth 2.0 (your integration record)",
+      map: [["project", "statement of work"], ["milestone project task", "milestone"], ["task completed", "customer sign-off"], ["invoice, amount unpaid", "invoiced / paid"]],
+      auto: ["A sign-off completes the linked project task, so its milestone billing line can bill", "Invoices on the project are matched by amount after the sign-off", "Import a project's milestone tasks as a statement of work"],
+      powers: ["Commercials", "Billing"], guard: "Writes only the status of linked project tasks. The integration record lives in your account; tokens are stored encrypted." },
+    { key: "certinia", name: "Certinia PSA", ini: "CP", color: "#2f9bd6", role: "PSA milestones on Salesforce", dir: "Both ways", sync: "On sign-off; invoiced hourly", auth: "Salesforce sign-in",
+      map: [["pse__Proj__c", "statement of work"], ["pse__Milestone__c", "milestone"], ["Approved + actual date", "customer sign-off"], ["Invoiced", "invoiced"]],
+      auto: ["A sign-off approves the milestone with its actual date, ready for the billing run", "Only sets the approval fields your org has, and respects approval processes (settings)", "Import a project's milestones as a statement of work"],
+      powers: ["Commercials", "Billing"], guard: "Writes only to linked milestones. If a validation rule or approval process refuses, the reason shows on the milestone." },
+    { key: "oracle_fusion", name: "Oracle Fusion Cloud", ini: "OR", color: "#c74634", role: "Project billing events", dir: "Both ways", sync: "On sign-off; invoiced hourly", auth: "Integration user (REST)",
+      map: [["contract number", "statement of work"], ["project billing event", "milestone"], ["event created or released", "customer sign-off"], ["invoiced amount", "invoiced"]],
+      auto: ["A sign-off creates the billing event, or releases a planned one (completion date, hold off)", "Each event carries the milestone id as its source reference, so a retry never bills twice"],
+      powers: ["Commercials", "Billing"], guard: "Writes only billing events for signed-off milestones. The password is stored encrypted." },
+    { key: "sap_s4", name: "SAP S/4HANA Cloud", ini: "S4", color: "#0a6ed1", role: "Milestone billing plans", dir: "Both ways", sync: "On sign-off; billing hourly", auth: "Communication user (OData)",
+      map: [["enterprise project", "statement of work"], ["project milestone", "milestone"], ["actual finish", "customer sign-off"], ["billing document, clearing", "invoiced / paid"]],
+      auto: ["A sign-off confirms the milestone, which lifts the block on its billing plan date", "Billing documents and their clearing status come back as invoiced and paid"],
+      powers: ["Commercials", "Billing"], guard: "Writes only the actual finish of linked milestones. The password is stored encrypted." },
+    { key: "workday", name: "Workday", ini: "WD", color: "#f5a623", role: "Installments and invoices", dir: "In", sync: "Hourly", auth: "Custom report + integration user",
+      map: [["custom report (RaaS)", "installments"], ["invoice", "invoiced"], ["payment status", "paid"], ["milestone.accepted webhook", "your Workday integration"]],
+      auto: ["Import a contract's installments as a statement of work", "Sign-offs reach Workday through a signed webhook into your own integration"],
+      powers: ["Commercials", "Billing"], guard: "Read-only here. Workday is changed only by your own integration, from the signed event." },
+    { key: "billing_csv", name: "Finance export", ini: "FX", color: "#7fb77e", role: "Any ERP or accounting tool", dir: "Out", sync: "When you export", auth: "None (download)",
+      map: [["milestone", "row"], ["evidence fingerprint, record entry", "proof of sign-off"], ["status", "to invoice / invoiced / paid"]],
+      auto: ["Portfolio → Billing → Export for finance", "The milestone.accepted webhook carries the same facts as they happen"], powers: ["Billing"], guard: "Every row carries the evidence fingerprint and record entry the customer signed off." },
+  ] },
   { group: "Time", why: "What utilization, burn and the budget rule run on.", items: [
     { key: "harvest", name: "Harvest", ini: "HV", color: "#f36c00", role: "Time entries", dir: "In", sync: "Every 30 minutes, reconciled nightly", auth: "One-click install (OAuth)",
       map: [["person email", "person"], ["project", "deployment"], ["spent date", "day"], ["hours", "hours"]],
@@ -1663,6 +1842,7 @@ async function integrationsView() {
     if (t.key === "engines") return cov.custom_engines ? [`${cov.custom_engines} registered`, true] : ["none yet", false];
     if (t.key === "time_csv") return cov.time_entries_30d ? [`${cov.time_entries_30d} entries · 30 d`, true] : ["no hours yet", false];
     if (t.key === "pipeline_csv") return cov.opportunities ? [`${cov.opportunities} deals`, true] : ["no deals yet", false];
+    if (t.key === "billing_csv") return can("billing.view") ? ["ready", true] : ["", false];
     return ["", false];
   };
   const live = k => { const p = provs[k]; return !!p && (p.personal ? p.people_connected > 0 : p.connections.some(c => c.status === "active")); };
@@ -1704,6 +1884,18 @@ function setupHtml(p, cat) {
 
 function connectBtn(p, label) {
   if (!p.configured) return "";
+  const tf = p.token_fields || [];
+  if (tf.length) {
+    const go_ = on(async () => {
+      const fields = Object.fromEntries(tf.map(f => [f.key, (val(`tf_${p.key}_${f.key}`) || "").trim()]));
+      const gap = tf.find(f => f.required !== false && !fields[f.key]); if (gap) { toast(`Fill in ${gap.label}`, true); return; }
+      if (p.tenant_app) { const r = await api(`/api/connections/${p.key}/start`, { method: "POST", body: { fields } }); location.href = r.url; return; }
+      await api(`/api/connections/${p.key}/token`, { method: "POST", body: { fields } });
+      toast(`${p.name} connected`); route();
+    });
+    return `<div class="stack" style="gap:8px">${tf.map(f => `<label class="field"><span>${esc(f.label)}${f.help ? ` <span class="muted">· ${esc(f.help)}</span>` : ""}</span><input id="tf_${p.key}_${f.key}" ${f.secret ? `type="password" autocomplete="off"` : `class="mono" autocomplete="off"`}></label>`).join("")}
+      <div><button class="btn primary sm" data-on="${go_}">${esc(label || `Connect ${p.name}`)}</button></div></div>`;
+  }
   if (p.auth === "token") {
     const go_ = on(async () => {
       const token = val("tk_" + p.key); if (!token) { toast("Paste the token first", true); return; }
@@ -1826,6 +2018,7 @@ function otherControls(t, cfg, info) {
   if (t.key === "sso") return `<a class="btn primary sm" href="#/settings" data-on="${on(() => { S.settingsTab = "sso"; go("settings"); })}">Set up in Settings</a>`;
   if (t.key === "mcp") return `<a class="btn primary sm" href="#/ai">Set up an AI tool</a>`;
   if (t.key === "engines") return `<a class="btn primary sm" href="#/settings" data-on="${on(() => { S.settingsTab = "engines"; go("settings"); })}">Register an engine</a>`;
+  if (t.key === "billing_csv") return can("billing.view") ? `<a class="btn primary sm" href="#/portfolio">Open billing</a>` : "";
   if (t.importKind) return `<a class="btn primary sm" href="#/import" data-on="${on(() => { S.importKind = t.importKind; go("import"); })}">Import a CSV</a>`;
   return "";
 }

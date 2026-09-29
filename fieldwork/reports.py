@@ -91,4 +91,5 @@ def build(conn, cfg: dict, dep, audience: str) -> str:
         if waiting and not shared_only:
             out.append(f"- {waiting} engine finding(s) waiting for confirmation")
         out.append("")
-    return "\n".join(out).rstrip() + "\n"
+    from .sow import report_footer
+    return "\n".join(out).rstrip() + "\n" + report_footer(conn, dep["tenant_id"])

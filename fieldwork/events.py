@@ -119,6 +119,10 @@ def slack_text(event: str, d: dict) -> str:
         "flag.raised": f":triangular_flag_on_post: *{str(d.get('severity', '')).upper()}* flag on {link}: {d.get('text')} ({who})",
         "delay.opened": f":hourglass_flowing_sand: Delay on {link}: {d.get('reason')}. Proposed owner *{d.get('owner')}*; confirm or reassign it in the console.",
         "approval.requested": f":raised_hand: *{d.get('agent')}* is asking to {d.get('request')} on {link} ({who}); approve or reject in the console.",
+        "milestone.ready": f":moneybag: *{d.get('milestone')}* ({d.get('amount_text')}) is ready to submit for sign-off · {link}",
+        "milestone.submitted": f":envelope_with_arrow: {who} submitted *{d.get('milestone')}* ({d.get('amount_text')}) for the customer's sign-off · {link}",
+        "milestone.accepted": f":white_check_mark: *{d.get('milestone')}* was signed off by {who}. {d.get('amount_text')} is ready to invoice · {link}",
+        "milestone.changes_requested": f":leftwards_arrow_with_hook: {who} asked for changes to *{d.get('milestone')}*: {d.get('note')} · {link}",
         "digest": d.get("text", ""),
     }[event]
 
@@ -161,6 +165,9 @@ def _deliver(conn, row) -> None:
     elif kind == "tracker":
         from . import trackers
         trackers.deliver(conn, row["tenant_id"], p)
+    elif kind == "billing_push":
+        from .connect import billing
+        billing.push(conn, row["tenant_id"], p)
     else:
         raise plugins.PluginError(f"unknown outbox kind {kind}")
 

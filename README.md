@@ -38,7 +38,7 @@ Hosted demos serve that engine themselves.
 **Deploy:** see [LAUNCH.md](LAUNCH.md): one-click Render blueprint (`render.yaml`), or `docker compose up` for Postgres locally.
 
 ```
-python -m pytest -q                                              # 165 tests on SQLite (320 with Postgres too)
+python -m pytest -q                                              # 187 tests on SQLite (364 with Postgres too)
 FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # plus the same tests on Postgres
 ```
 
@@ -66,7 +66,11 @@ FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # plus the same
   - **Google and Outlook calendars**, connected by each person, take their days out off capacity.
   - **Gmail and Outlook, opt-in**, give each deployment its last customer contact, and flag an active one that's gone quiet. Headers only; nothing but the customer, direction and time is kept.
   - Every delivery is signature-checked, stored, then applied; failures retry and can be replayed; each connection shows its health; everything is reconciled nightly. The console updates itself as things change.
-- **Signed event webhooks** to feed any other system.
+- **Statements of work that turn delivery into billing.** Split a contract into milestones and tie each one to a stage. When the stage is done the milestone is ready to bill; someone submits it, and Fieldwork freezes the evidence at that moment (stage dates, shared work finished, confirmed results, acceptance criteria, amount) and writes its fingerprint into the audit chain. The customer signs off against that exact evidence, or asks for changes with a note. A sign-off given by email is recorded as such, on their behalf. Amounts lock once submitted.
+- **Customers see where they stand.** The customer's view shows every stage, where the engagement is now, the next milestone, what's waiting for their sign-off, and a receipt for each sign-off they can check against the record at any time.
+- **Money, from delivery to cash.** Per deployment and across the portfolio: under contract, earned, ready to invoice, awaiting sign-off, invoiced and paid, with a finance CSV where every row carries the evidence fingerprint and record entry the customer signed.
+- **ERP billing bridge.** A sign-off goes to the ERP the statement of work is linked to, and invoiced and paid come back: **NetSuite** (completes the milestone's project task), **Certinia PSA on Salesforce** (approves the PSA milestone), **Oracle Fusion Cloud** (creates or releases the project billing event), **SAP S/4HANA Cloud** (confirms the project milestone, which releases its billing plan date) and **Workday** (reads installments and invoices from a custom report; sign-offs reach it by signed webhook). Import a statement of work straight from the ERP's project or contract.
+- **Signed event webhooks** to feed any other system, including `milestone.accepted` with the evidence fingerprint.
 - **AI tools.** An MCP server at `/mcp` works with Claude Code, Claude Desktop, Cursor, Codex, Gemini CLI, the OpenAI API and the Grok API. The console's AI tools page has copy-paste setup for each. An agent acts as its person, with their permissions, and its changes are audited under their name.
 - **Import.** Bring deployments and tasks in from a spreadsheet.
 - **Provisioning.** The Head of Deployments (or any role given people management) sets up roles, adds people one at a time or from a CSV, and offboards them: sign-ins, sessions and tokens stop at once, open work is handed to someone who can see it (or waits in Unassigned), staffing is freed, personal calendar and mailbox connections are removed with what they collected, and the audit trail keeps everything. Reactivate any time.
@@ -109,6 +113,7 @@ A stage can carry up to four engines. Teams plug in their own as signed webhooks
 - **Outbound safety.** Every call to engines, Slack, trackers, webhooks and identity providers is guarded against private addresses, refuses redirects, is size-capped and times out. It's queued in an outbox with retries, never made while a request is open.
 - **Inbound safety.** Every webhook is signature-checked (per connection or per app), stored once by its delivery id, and applied through the same code the console uses. Slack buttons act as the person who pressed them, with their permissions.
 - **OAuth done carefully.** State is single-use, expires in 15 minutes and is bound to the browser that started it; PKCE wherever the provider supports it; tokens encrypted at rest and refreshed before they expire.
+- **Sign-offs hold up.** A customer signs off the exact evidence they reviewed (a resubmission is refused until they look again); the evidence fingerprint is in the audit chain; each sign-off leaves a receipt anyone in the workspace can check, and editing any earlier record breaks it. Pushes to an ERP carry the milestone id, so a retry never bills twice.
 - **Personal data stays small.** Calendars keep only time off; email keeps only customer, direction and time; disconnecting deletes what was collected.
 
 ## Layout
@@ -121,7 +126,9 @@ fieldwork/mcp.py         MCP server (/mcp) and stdio bridge
 fieldwork/events.py      events, outbox worker, Slack, webhooks, digest
 fieldwork/trackers.py    GitHub, Linear, Jira two-way sync
 fieldwork/connect/       live connections: installs, event store, scheduler, health, live stream,
-                         and one module per family (slack, trackers, crm, timesheets, calendars, mail)
+                         the billing bridge, and one module per family (slack, trackers, crm,
+                         timesheets, calendars, mail, erp)
+fieldwork/sow.py         statements of work, milestones, evidence packets, sign-off, receipts
 fieldwork/reports.py     status report drafting
 fieldwork/config.py      workspace config and validation
 fieldwork/db.py          SQLite / Postgres adapter and migrations
@@ -138,8 +145,9 @@ examples/engines/        a webhook engine and a push engine to copy from
 - OAuth for remote MCP, which ChatGPT and Claude.ai connectors require. The other AI tools work today.
 - SAML and SCIM provisioning.
 - AI drafting with each team's own model. Reports are deterministic today.
-- A PSA connector (Kantata, Certinia) and Zendesk / Intercom for support signals. CSV import covers them for now.
-- The live connectors are tested against stand-ins for each vendor's documented API, not yet against the live services. The first real connection per vendor is the real test.
+- Kantata, and Zendesk / Intercom for support signals. CSV import covers them for now.
+- The live connectors are tested against stand-ins for each vendor's documented API, not yet against the live services. The first real connection per vendor is the real test. The ERP connectors in particular touch settings that vary by customer (NetSuite's completed-task status, Certinia's approval process, Oracle's event type); see docs/CONNECTIONS.md.
+- Writing sign-offs into Workday directly (it needs the customer's own integration today).
 - A connection pool, and IP pinning for outbound calls.
 
 ## License
