@@ -1,0 +1,5 @@
+system,owner,data_class,interface,access,documented,controls
+CRM,Sales Ops,confidential,rest api,granted,yes,sso audit
+Billing,Finance,pii,sftp,requested,yes,sso
+Data warehouse,,internal,jdbc,granted,no,sso audit
+Support desk,Support,pii,rest api,none,no,
