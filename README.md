@@ -38,7 +38,7 @@ Hosted demos serve that engine themselves.
 **Deploy:** see [LAUNCH.md](LAUNCH.md): one-click Render blueprint (`render.yaml`), or `docker compose up` for Postgres locally.
 
 ```
-python -m pytest -q                                              # 161 tests on SQLite (311 with Postgres too)
+python -m pytest -q                                              # 165 tests on SQLite (320 with Postgres too)
 FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # plus the same tests on Postgres
 ```
 
@@ -69,6 +69,7 @@ FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # plus the same
 - **Signed event webhooks** to feed any other system.
 - **AI tools.** An MCP server at `/mcp` works with Claude Code, Claude Desktop, Cursor, Codex, Gemini CLI, the OpenAI API and the Grok API. The console's AI tools page has copy-paste setup for each. An agent acts as its person, with their permissions, and its changes are audited under their name.
 - **Import.** Bring deployments and tasks in from a spreadsheet.
+- **Provisioning.** The Head of Deployments (or any role given people management) sets up roles, adds people one at a time or from a CSV, and offboards them: sign-ins, sessions and tokens stop at once, open work is handed to someone who can see it (or waits in Unassigned), staffing is freed, personal calendar and mailbox connections are removed with what they collected, and the audit trail keeps everything. Reactivate any time.
 - **Open beta.** Anyone can start a workspace with GitHub or Google (`FIELDWORK_OPEN_SIGNUP=1`), invite their team by email, and send feedback from any screen. The public demo resets hourly without touching anyone's workspace.
 
 ## The default template

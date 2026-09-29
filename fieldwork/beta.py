@@ -167,7 +167,7 @@ def finish_login(conn, row, code: str, error: str) -> RedirectResponse:
         return back(login_error="Sign-in didn't go through; try again")
     demo = DEMO_TENANTS if demo_on() else ()
     ph = ",".join("?" * len(demo)) or "''"
-    users = conn.execute(f"SELECT u.* FROM users u JOIN tenants t ON t.id=u.tenant_id WHERE lower(u.email)=?"
+    users = conn.execute(f"SELECT u.* FROM users u JOIN tenants t ON t.id=u.tenant_id WHERE lower(u.email)=? AND u.active=1"
                          f" AND u.tenant_id NOT IN ({ph}) ORDER BY t.created_at", (who["email"], *demo)).fetchall()
     with db.tx(conn):
         if users:

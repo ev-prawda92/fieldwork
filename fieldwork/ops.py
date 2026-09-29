@@ -337,7 +337,7 @@ def _dep_active(dep, ws: date) -> bool:
 def delivery_people(conn, cfg: dict, tenant_id: str) -> list:
     """Internal people who carry delivery hours: they see internal work and have hours set."""
     internal = {r for r, s in cfg["permissions"].get("task.view_internal", {}).items() if s}
-    return [u for u in conn.execute("SELECT * FROM users WHERE tenant_id=? ORDER BY name", (tenant_id,))
+    return [u for u in conn.execute("SELECT * FROM users WHERE tenant_id=? AND active=1 ORDER BY name", (tenant_id,))
             if u["role"] in internal and (u["weekly_hours"] or 0) > 0]
 
 

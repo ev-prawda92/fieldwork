@@ -420,6 +420,10 @@ CREATE TABLE IF NOT EXISTS feedback (
     created_at  TEXT NOT NULL
 )
 """),
+    (9, "offboarding: deactivated people", """
+ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE users ADD COLUMN deactivated_at TEXT
+"""),
 ]
 
 _AUTO = {"sqlite": "INTEGER PRIMARY KEY AUTOINCREMENT", "postgres": "BIGSERIAL PRIMARY KEY"}

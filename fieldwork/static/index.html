@@ -638,7 +638,7 @@ async function gettingStarted(pf) {
   const done = { dep: pf.deployments.length > 0 };
   if (!S.welcome && done.dep) return "";
   let people = [], cat = null;
-  try { people = can("people.read") ? await api("/api/people") : []; } catch (e) {}
+  try { people = can("people.read") ? await api("/api/people").then(r => r.filter(x => x.active !== 0)) : []; } catch (e) {}
   try { cat = can("integrations.manage") ? await api("/api/connections") : null; } catch (e) {}
   done.team = people.length > 1;
   done.tools = !!cat && cat.providers.some(p => !p.personal && p.connections.some(c => c.status === "active"));
@@ -791,7 +791,7 @@ async function chainsView() {
 }
 
 async function newDeploymentForm() {
-  const [customers, people] = await Promise.all([api("/api/customers"), can("people.read") ? api("/api/people") : []]);
+  const [customers, people] = await Promise.all([api("/api/customers"), can("people.read") ? api("/api/people").then(r => r.filter(x => x.active !== 0)) : []]);
   const create = on(async () => {
     let cid = val("nd_c");
     if (cid === "__new") {
@@ -1051,7 +1051,8 @@ function approvalsPanel(a, reload) {
 }
 
 async function teamView() {
-  const [t, people, p] = await Promise.all([api("/api/team"), api("/api/people"), api("/api/portfolio")]);
+  const [t, everyone, p] = await Promise.all([api("/api/team"), api("/api/people"), api("/api/portfolio")]);
+  const people = everyone.filter(x => x.active !== 0), gone = everyone.filter(x => x.active === 0);
   const reload = () => route();
   const manage = can("people.manage");
   const over = t.people.filter(x => x.over > 0);
@@ -1076,16 +1077,38 @@ async function teamView() {
       ${kpi("Over-allocated", over.length, over.map(x => esc(x.name.split(" ")[0]) + " +" + num(x.over) + " h").join(", ") || "nobody", over.length ? "alert" : "", over.length ? "bad" : "")}
     </div>
     <div class="grid g-main">${capacityPanel(t)}${unassignedPanel(t, reload)}</div>
-    <div class="panel flush"><div class="tblwrap"><table class="tbl"><thead><tr><th>Person</th><th>Role</th><th>Weekly hours</th><th>Deployments</th><th>Open tasks</th></tr></thead><tbody>
+    <div class="panel flush"><div class="tblwrap"><table class="tbl"><thead><tr><th>Person</th><th>Role</th><th>Weekly hours</th><th>Deployments</th><th>Open tasks</th><th></th></tr></thead><tbody>
       ${people.map(x => `<tr><td><div class="nm">${esc(x.name)}</div><div class="sm">${esc(x.email)}</div></td>
         <td>${manage ? `<select data-id="${esc(x.id)}" data-chg="${role}" aria-label="Role for ${esc(x.name)}">${S.cfg.roles.map(r => `<option value="${esc(r.key)}" ${r.key === x.role ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select>` : esc(x.role_name)}</td>
         <td>${manage ? `<input type="number" min="0" max="80" step="1" value="${x.weekly_hours ?? 40}" data-id="${esc(x.id)}" data-chg="${hours}" style="width:80px" aria-label="Weekly hours for ${esc(x.name)}">` : num(x.weekly_hours)}</td>
-        <td class="mono">${x.deployments}</td><td class="mono">${x.open_tasks}</td></tr>`).join("")}</tbody></table></div></div>
+        <td class="mono">${x.deployments}</td><td class="mono">${x.open_tasks}</td>
+        <td>${manage && x.id !== S.me.user.id ? `<button class="btn xs ghost" data-on="${on(() => offboardForm(x, people, reload))}">Offboard</button>` : ""}</td></tr>
+        <tr id="off_${esc(x.id)}" style="display:none"><td colspan="6"></td></tr>`).join("")}</tbody></table></div></div>
+    ${manage && gone.length ? `<details class="panel"><summary class="small">${plural(gone.length, "deactivated person", "deactivated people")}</summary>
+      ${gone.map(x => `<div class="row nowrap small" style="padding:6px 0;border-top:1px solid var(--line)"><span style="flex:1">${esc(x.name)} <span class="muted">· ${esc(x.email)} · since ${fmtDate(x.deactivated_at)}</span></span><button class="btn xs" data-on="${on(async () => { await api(`/api/people/${x.id}/reactivate`, { method: "POST" }); toast(`${x.name} can sign in again`); reload(); })}">Reactivate</button></div>`).join("")}</details>` : ""}
     ${manage ? `<div class="panel"><div class="label">Add a person</div><div class="formgrid">
       <label class="field"><span>Name</span><input id="np_n"></label><label class="field"><span>Email</span><input id="np_e" type="email"></label>
       <label class="field"><span>Role</span><select id="np_r">${S.cfg.roles.map(r => `<option value="${esc(r.key)}">${esc(r.name)}</option>`).join("")}</select></label>
-      <div><button class="btn primary" data-on="${addp}">Add person</button></div></div><div id="np_out"></div></div>` : ""}
+      <div><button class="btn primary" data-on="${addp}">Add person</button></div></div><div id="np_out"></div>
+      <div class="xs muted">Adding a whole team? <a href="#/import" data-on="${on(() => { S.importKind = "people"; go("import"); })}">Upload a CSV of people</a>.</div></div>` : ""}
     <p class="small muted">Set weekly hours to 0 for people who don't carry delivery work; they drop out of capacity.</p>`);
+}
+
+function offboardForm(x, people, reload) {
+  const row = document.getElementById("off_" + x.id); if (!row) return;
+  if (row.style.display !== "none") { row.style.display = "none"; return; }
+  const go_ = on(async () => {
+    const heir = val("off_to_" + x.id) || null;
+    const r = await api(`/api/people/${x.id}/deactivate`, { method: "POST", body: { reassign_to: heir } });
+    toast(`${x.name} is offboarded: ${plural(r.tasks_reassigned, "task")} handed over${r.tasks_unassigned ? `, ${r.tasks_unassigned} waiting for an owner` : ""}`);
+    reload();
+  });
+  row.style.display = "";
+  row.firstElementChild.innerHTML = `<div class="sub-card" style="gap:8px"><b>Offboard ${esc(x.name)}</b>
+    <div class="small text2">Their sign-in, sessions and access tokens stop working now. They come off every deployment, their calendar and mailbox connections are removed with what those collected, and everything they did stays on the audit trail. You can reactivate them later.</div>
+    <div class="row nowrap"><label class="small">Hand their ${plural(x.open_tasks, "open task")} to</label>
+      <select id="off_to_${esc(x.id)}"><option value="">Nobody yet (Unassigned)</option>${people.filter(p => p.id !== x.id).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select>
+      <button class="btn sm danger" data-on="${go_}">Offboard</button><button class="btn sm ghost" data-on="${on(() => { row.style.display = "none"; })}">Cancel</button></div></div>`;
 }
 
 /* =========================================================== my work */
@@ -1197,7 +1220,7 @@ async function depOverview(d, row, reload) {
   const [tasks, linkInfo, reps, flags, delays, people] = await Promise.all([
     api(`/api/tasks?deployment_id=${encodeURIComponent(id)}`), api(`/api/deployments/${id}/links`), api(`/api/deployments/${id}/reports`),
     api(`/api/flags?deployment_id=${encodeURIComponent(id)}`), api(`/api/delays?deployment_id=${encodeURIComponent(id)}`),
-    can("people.read") ? api("/api/people") : []]);
+    can("people.read") ? api("/api/people").then(r => r.filter(x => x.active !== 0)) : []]);
   const stage = stageOf(d.stage);
   const open = tasks.filter(t => t.status !== "done");
   const addTask = on(async () => {
@@ -1984,18 +2007,20 @@ async function settingsView() {
 /* ============================================================== import */
 async function importView() {
   const fieldCols = S.cfg.fields.deployment.map(f => f.key).join(", ");
+  const roleList = S.cfg.roles.map(r => r.name).join(", ");
   const kinds = [
     ["deployments", "Deployments", can("deployment.create"), `Columns: <b>customer, deployment</b> (required), stage, health, lead_email, industry${fieldCols ? ", " + esc(fieldCols) : ""}. Customers are created if they don't exist.`, "customer,deployment,stage,health,lead_email\nAcme Foods,Order-to-cash agent,Integrate,at risk,"],
     ["tasks", "Tasks", can("task.create"), `Columns: <b>deployment, title</b> (required), assignee_email, status, due, share. Deployment is matched by name. Tasks for customer contacts are shared with them.`, "deployment,title,assignee_email,status,due\nOrder-to-cash agent,Map invoice states,,open,2026-10-09"],
     ["time", "Timesheets", can("people.read"), `Columns: <b>email, day, hours</b> (required), deployment. Export from Harvest, Toggl or your PSA. Hours feed utilization, burn and the budget rule.`, "email,day,hours,deployment\nmaya@yourco.com,2026-09-22,6,AP exception agent"],
     ["pipeline", "Pipeline", can("pipeline.edit"), `Columns: <b>name</b> (required), customer, use_case, value, probability, stage (lead, qualified, proposal, commit, won, lost), expected_start, weekly_hours, external_id. Re-importing updates deals by external_id or name.`, "name,customer,value,probability,stage,expected_start,weekly_hours,external_id\nAcme · Claims agent,Acme,250000,40%,proposal,2026-11-02,60,006Qx0001"],
+    ["people", "People", can("people.manage"), `Columns: <b>name, email</b> (required), role (${esc(roleList)}), weekly_hours. Everyone added signs in with the email you list. Existing emails are skipped.`, "name,email,role,weekly_hours\nMaya Chen,maya@yourco.com,Forward Deployed Engineer,40"],
   ].filter(k => k[2]);
   if (!kinds.some(k => k[0] === S.importKind)) S.importKind = kinds[0][0];
   const k = kinds.find(x => x[0] === S.importKind);
   const file = on(async el => { const f = el.files[0]; if (f) $("#imp_csv").value = await f.text(); });
   const run = on(async () => {
     const r = await api("/api/import", { method: "POST", body: { kind: k[0], csv: val("imp_csv") } });
-    $("#imp_out").innerHTML = `<div class="panel sunk"><b class="good">${r.created} imported</b>${r.errors.length ? `<div class="small"><b class="warn">${plural(r.errors.length, "row")} skipped</b>${r.errors.map(x => `<div class="muted">${esc(x)}</div>`).join("")}</div>` : ""}</div>`;
+    $("#imp_out").innerHTML = `<div class="panel sunk"><b class="good">${r.created} imported</b>${r.note ? `<div class="small">${esc(r.note)}</div>` : ""}${r.errors.length ? `<div class="small"><b class="warn">${plural(r.errors.length, "row")} skipped</b>${r.errors.map(x => `<div class="muted">${esc(x)}</div>`).join("")}</div>` : ""}</div>`;
     if (r.created) { invalidate(); toast(`${r.created} ${k[1].toLowerCase()} imported`); }
   });
   page(`<div><h1>Import</h1><p class="lede">Bring what you already have in from a spreadsheet. Save it as CSV, then paste it or pick the file. Every row is checked; bad rows are skipped and listed.</p></div>

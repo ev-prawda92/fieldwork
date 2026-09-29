@@ -171,6 +171,8 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
             via = "sso"
         if not user:
             raise HTTPException(401, "invalid sign-in")
+        if not user["active"]:
+            raise HTTPException(401, "this account has been deactivated")
         c = Ctx(conn, user, load_tenant(user["tenant_id"]), via)
         # When a workspace requires company sign-in, personal tokens only work
         # for people who can edit settings (break-glass access if the IdP is down).
@@ -308,6 +310,8 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
         user = conn.execute("SELECT * FROM users WHERE tenant_id=? AND lower(email)=?",
                             (t["id"], claims["email"])).fetchone()
         tmp_actor = "sso:" + claims["email"]
+        if user and not user["active"]:
+            return fail("this account has been deactivated; ask an admin to reactivate it")
         with db.tx(conn):
             if not user:
                 role = cfg["sso"]["jit_role"]
@@ -412,7 +416,7 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
     def people(c: Ctx = Depends(ctx)):
         c.require("people.read")
         rows = conn.execute(
-            """SELECT u.id, u.name, u.email, u.role, u.weekly_hours,
+            """SELECT u.id, u.name, u.email, u.role, u.weekly_hours, u.active, u.deactivated_at,
                       (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id=u.id AND t.status!='done') open_tasks,
                       (SELECT COUNT(*) FROM deployment_members m WHERE m.user_id=u.id) deployments
                FROM users u WHERE u.tenant_id=? ORDER BY u.name""", (c.tenant_id,)).fetchall()
@@ -428,9 +432,11 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
         c.require("people.manage")
         if body.role not in {r["key"] for r in c.cfg["roles"]}:
             raise HTTPException(422, f"unknown role {body.role!r}")
-        if conn.execute("SELECT 1 FROM users WHERE tenant_id=? AND lower(email)=?",
-                        (c.tenant_id, body.email.strip().lower())).fetchone():
-            raise HTTPException(409, "someone with that email is already in the workspace")
+        ex = conn.execute("SELECT active FROM users WHERE tenant_id=? AND lower(email)=?",
+                          (c.tenant_id, body.email.strip().lower())).fetchone()
+        if ex:
+            raise HTTPException(409, "someone with that email is already in the workspace" if ex["active"]
+                                else "that person was deactivated; reactivate them instead")
         uid = new_id("usr")
         tok = "fwu_" + secrets.token_urlsafe(24)
         with db.tx(conn):
@@ -453,6 +459,79 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
     class PersonPatch(BaseModel):
         role: str | None = None
         weekly_hours: float | None = Field(default=None, ge=0, le=80)
+
+    class OffboardIn(BaseModel):
+        reassign_to: str | None = None   # open tasks go here; None leaves them unassigned for someone to pick up
+
+    def managers_left(c: Ctx, excluding: str) -> int:
+        roles = [r for r, s in c.cfg["permissions"].get("people.manage", {}).items() if s]
+        if not roles:
+            return 0
+        return conn.execute(f"SELECT COUNT(*) n FROM users WHERE tenant_id=? AND active=1 AND id!=?"
+                            f" AND role IN ({','.join('?' * len(roles))})", (c.tenant_id, excluding, *roles)).fetchone()["n"]
+
+    @app.post("/api/people/{user_id}/deactivate")
+    def deactivate(user_id: str, body: OffboardIn, c: Ctx = Depends(ctx)):
+        """Offboarding: access ends everywhere at once, and their work doesn't fall on the floor."""
+        c.require("people.manage")
+        u = conn.execute("SELECT * FROM users WHERE id=? AND tenant_id=?", (user_id, c.tenant_id)).fetchone()
+        if not u:
+            raise HTTPException(404, "person not found")
+        if user_id == c.uid:
+            raise HTTPException(422, "you can't deactivate yourself; ask another admin")
+        if not u["active"]:
+            raise HTTPException(409, "already deactivated")
+        if c.cfg["permissions"].get("people.manage", {}).get(u["role"]) and not managers_left(c, user_id):
+            raise HTTPException(422, "they're the last person who can manage people; give someone else that role first")
+        heir = None
+        if body.reassign_to:
+            heir = tenant_user(c, body.reassign_to)
+            if heir["id"] == user_id:
+                raise HTTPException(422, "pick someone else to take their work")
+        ts = audit.now()
+        with db.tx(conn):
+            open_tasks = conn.execute("SELECT * FROM tasks WHERE tenant_id=? AND assignee_id=? AND status!='done'",
+                                      (c.tenant_id, user_id)).fetchall()
+            moved, unassigned = [], []
+            for t in open_tasks:
+                if heir and (t["visibility"] == "shared" or sees_internal_tasks(c, heir["role"], t["deployment_id"], heir["id"])):
+                    conn.execute("UPDATE tasks SET assignee_id=?, updated_at=? WHERE id=?", (heir["id"], ts, t["id"]))
+                    moved.append(t["id"])
+                else:  # nobody named, or the named person couldn't see it: it waits in Unassigned for a lead
+                    conn.execute("UPDATE tasks SET assignee_id=NULL, updated_at=? WHERE id=?", (ts, t["id"]))
+                    unassigned.append(t["id"])
+            deps = [r["deployment_id"] for r in conn.execute(
+                "SELECT deployment_id FROM deployment_members WHERE user_id=?", (user_id,))]
+            conn.execute("DELETE FROM deployment_members WHERE user_id=?", (user_id,))
+            conn.execute("UPDATE deployments SET lead_id=NULL WHERE lead_id=? AND tenant_id=?", (user_id, c.tenant_id))
+            conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+            conn.execute("DELETE FROM personal_tokens WHERE user_id=?", (user_id,))
+            personal = [r["id"] for r in conn.execute(
+                "SELECT id FROM connections WHERE user_id=? AND status!='disconnected'", (user_id,))]
+            for cid in personal:  # their calendar and mailbox: tokens forgotten, what was collected deleted
+                conn.execute("UPDATE connections SET status='disconnected', tokens=NULL, updated_at=? WHERE id=?", (ts, cid))
+                conn.execute("DELETE FROM time_off WHERE connection_id=?", (cid,))
+                conn.execute("DELETE FROM contact_signals WHERE connection_id=?", (cid,))
+            conn.execute("UPDATE users SET active=0, deactivated_at=?, token_hash=? WHERE id=?",
+                         (ts, token_hash("deactivated:" + secrets.token_hex(16)), user_id))
+            c.log("people.deactivate", user_id, {"name": u["name"], "tasks_reassigned": len(moved),
+                                                 "tasks_unassigned": len(unassigned), "reassigned_to": heir["id"] if heir else None,
+                                                 "deployments_left": deps, "connections_removed": len(personal)})
+        return {"tasks_reassigned": len(moved), "tasks_unassigned": len(unassigned), "deployments_left": len(deps),
+                "connections_removed": len(personal)}
+
+    @app.post("/api/people/{user_id}/reactivate")
+    def reactivate(user_id: str, c: Ctx = Depends(ctx)):
+        c.require("people.manage")
+        u = conn.execute("SELECT * FROM users WHERE id=? AND tenant_id=?", (user_id, c.tenant_id)).fetchone()
+        if not u:
+            raise HTTPException(404, "person not found")
+        if u["active"]:
+            raise HTTPException(409, "already active")
+        with db.tx(conn):
+            conn.execute("UPDATE users SET active=1, deactivated_at=NULL WHERE id=?", (user_id,))
+            c.log("people.reactivate", user_id, {"name": u["name"]})
+        return {"ok": True, "note": "they sign in again the usual way; staff them on deployments again as needed"}
 
     @app.patch("/api/people/{user_id}")
     def change_role(user_id: str, body: PersonPatch, c: Ctx = Depends(ctx)):
@@ -554,6 +633,8 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
 
     def tenant_user(c: Ctx, uid: str):
         u = conn.execute("SELECT * FROM users WHERE id=? AND tenant_id=?", (uid, c.tenant_id)).fetchone()
+        if u and not u["active"]:
+            raise HTTPException(422, f"{u['name']} has been deactivated")
         if not u:
             raise HTTPException(422, f"no such person in this workspace: {uid}")
         return u

@@ -400,7 +400,7 @@ def apply_inbound(conn, tenant_id: str, provider: str, changes: list[tuple[str, 
 def _can_hold(conn, cfg: dict, task, uid: str) -> bool:
     """Only move a task to someone who can see it, by the console's rule: internal tasks go to people who see
     internal work on this deployment (everywhere, or here because they're staffed on it)."""
-    u = conn.execute("SELECT role FROM users WHERE id=? AND tenant_id=?", (uid, task["tenant_id"])).fetchone()
+    u = conn.execute("SELECT role FROM users WHERE id=? AND tenant_id=? AND active=1", (uid, task["tenant_id"])).fetchone()
     if not u:
         return False
     if not conn.execute("SELECT 1 FROM deployment_members WHERE deployment_id=? AND user_id=?",

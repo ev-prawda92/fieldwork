@@ -137,7 +137,7 @@ class CRM(Provider):
             if cx.extra.get("_domains"):
                 core.save(rt.conn, cx, extra=cx.extra)
         if cx.settings.get("auto_open") and n["won"]:
-            owner = rt.conn.execute("SELECT * FROM users WHERE id=?", (cx["created_by"],)).fetchone()
+            owner = rt.conn.execute("SELECT * FROM users WHERE id=? AND active=1", (cx["created_by"],)).fetchone()
             for oid in n["won"]:
                 if owner:
                     open_deployment(rt.conn, owner, oid)

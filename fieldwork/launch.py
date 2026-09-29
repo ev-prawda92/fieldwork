@@ -383,6 +383,43 @@ def register(app, d) -> None:
                                             "status": "open"}, "blocked")
                     trackers.queue_push(conn, c.tenant_id, c.cfg, dep, tid)
                     created += 1
+        elif body.kind == "people":
+            c.require("people.manage")
+            if {"name", "email"} - set(rows[0]):
+                raise HTTPException(422, f"missing column(s): {', '.join(sorted({'name', 'email'} - set(rows[0])))}")
+            from .app import token_hash
+            roles = {r["key"]: r["key"] for r in c.cfg["roles"]} | {r["name"].lower(): r["key"] for r in c.cfg["roles"]}
+            default_role = next((r["key"] for r in c.cfg["roles"] if r["key"] == "fde"), c.cfg["roles"][0]["key"])
+            seen = set()
+            with db.tx(conn):
+                for i, r in enumerate(rows, 2):
+                    email = r.get("email", "").strip().lower()
+                    if not r.get("name") or "@" not in email:
+                        errors.append(f"row {i}: name and a valid email are required"); continue
+                    if email in people or email in seen:
+                        errors.append(f"row {i}: {email} is already in the workspace"); continue
+                    role = roles.get((r.get("role") or "").strip().lower()) if r.get("role") else default_role
+                    if not role:
+                        errors.append(f"row {i}: unknown role {r.get('role')!r}"); continue
+                    try:
+                        hours = float(r.get("weekly_hours") or 40)
+                        assert 0 <= hours <= 80
+                    except (ValueError, AssertionError):
+                        errors.append(f"row {i}: weekly_hours must be 0-80"); continue
+                    uid = "usr_" + secrets.token_hex(6)
+                    conn.execute("INSERT INTO users (id, tenant_id, name, email, role, manager_id, token_hash, profile_json,"
+                                 " created_at, weekly_hours) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                 (uid, c.tenant_id, r["name"][:120], email, role, None,
+                                  token_hash("invited:" + secrets.token_hex(16)), "{}", audit.now(), hours))
+                    seen.add(email)
+                    created += 1
+                if created:
+                    c.log("people.import", c.tenant_id, {"added": created})
+            from . import beta
+            ways = [{"github": "GitHub", "google": "Google"}.get(w, w) for w in beta.configured()]
+            note = (f"They sign in at {events.public_url()} with {' or '.join(ways)} using the email you listed."
+                    if ways else "Add sign-in (GitHub, Google or company SSO) so they can get in.")
+            return {"created": created, "errors": errors, "note": note}
         else:
             from . import ops
             created, errors = ops.import_rows(conn, c, body.kind, rows, people, d.visible_deployments(c))

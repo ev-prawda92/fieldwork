@@ -202,7 +202,7 @@ class Runtime:
 
     def users_by_email(self) -> dict:
         return {u["email"].lower(): u for u in
-                self.conn.execute("SELECT * FROM users WHERE tenant_id=?", (self.tenant_id,))}
+                self.conn.execute("SELECT * FROM users WHERE tenant_id=? AND active=1", (self.tenant_id,))}
 
 
 def update_config(conn, tenant_id: str, actor: str, change) -> dict:

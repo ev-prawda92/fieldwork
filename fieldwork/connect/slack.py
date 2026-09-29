@@ -186,7 +186,7 @@ class Slack(Provider):
         known = cx.extra.get("_people", {})
         hit = known.get(slack_user)
         if isinstance(hit, list) and hit[2] > time.time() - self.MAP_TTL:
-            u = conn.execute("SELECT * FROM users WHERE id=? AND tenant_id=?", (hit[0], cx.tenant_id)).fetchone()
+            u = conn.execute("SELECT * FROM users WHERE id=? AND tenant_id=? AND active=1", (hit[0], cx.tenant_id)).fetchone()
             if u and u["email"].lower() == hit[1]:
                 return u
         try:
@@ -198,7 +198,8 @@ class Slack(Provider):
         email = ((user.get("profile") or {}).get("email") or "").lower()
         if not email:
             return None
-        u = conn.execute("SELECT * FROM users WHERE tenant_id=? AND lower(email)=?", (cx.tenant_id, email)).fetchone()
+        u = conn.execute("SELECT * FROM users WHERE tenant_id=? AND lower(email)=? AND active=1",
+                         (cx.tenant_id, email)).fetchone()
         if u:
             with conn.tx():
                 core.save(conn, cx, extra={**cx.extra, "_people": {**known, slack_user: [u["id"], email, time.time()]}})
@@ -467,7 +468,7 @@ def deliver(conn, tenant_id: str, kind: str, p: dict) -> bool:
     if kind == "slack_dm":
         if not cx.settings.get("dm_assignments", True):
             return True
-        u = conn.execute("SELECT email FROM users WHERE id=? AND tenant_id=?",
+        u = conn.execute("SELECT email FROM users WHERE id=? AND tenant_id=? AND active=1",
                          (p["data"].get("assignee_id"), tenant_id)).fetchone()
         sid = SLACK.slack_user_for(conn, cx, u["email"]) if u else None
         if not sid:

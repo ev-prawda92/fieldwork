@@ -135,7 +135,8 @@ def register(app, d) -> None:
             from .. import beta
             return beta.finish_login(conn, row, code, error)
         p = REGISTRY.get(row["provider"])
-        user = conn.execute("SELECT * FROM users WHERE id=? AND tenant_id=?", (row["user_id"], row["tenant_id"])).fetchone()
+        user = conn.execute("SELECT * FROM users WHERE id=? AND tenant_id=? AND active=1",
+                            (row["user_id"], row["tenant_id"])).fetchone()
         if not p or not user:
             return back(personal, oauth_error="That connection can't be finished.")
         if error or not code:

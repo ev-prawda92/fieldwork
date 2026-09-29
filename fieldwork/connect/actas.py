@@ -30,6 +30,8 @@ def _find(method: str, path: str):
 def call(conn, user, method: str, path: str, body: dict | None = None, via: str = "slack", **params):
     """-> (ok, result or error message)."""
     d = _routes["d"]
+    if not user["active"]:
+        return False, "this account has been deactivated"
     tenant = conn.execute("SELECT * FROM tenants WHERE id=?", (user["tenant_id"],)).fetchone()
     c = d.Ctx(conn, user, tenant, via)
     fn = _find(method, path)
