@@ -1236,6 +1236,8 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
     beta.register(app, deps)
     from . import sow
     sow.register(app, deps)
+    from . import onboarding
+    onboarding.register(app, deps)
 
     if background:
         @app.on_event("startup")

@@ -441,6 +441,7 @@ function globalNav() {
     ["import", "Import", "CSV in", can("deployment.create") || can("pipeline.edit") || can("people.read")],
     ["ai", "AI tools", "MCP · agents", k !== "customer"],
     ["audit", "Audit trail", "Hash-chained", can("audit.read")],
+    ["onboarding", "Get started", "Set up your workspace", can("config.edit") && can("deployment.create")],
     ["settings", "Settings", "Your methodology", can("config.edit") || can("engine.manage")],
   ];
   let i = 0;
@@ -506,7 +507,7 @@ async function route() {
   S.route = parts;
   const views = { home: homeView, chains: chainsView, projects: projectsView, pipeline: pipelineView, portfolio: portfolioView,
     delays: delaysView, team: teamView, work: workView, integrations: integrationsView, import: importView, ai: aiView,
-    audit: auditView, settings: settingsView, dep: depView };
+    audit: auditView, settings: settingsView, onboarding: onboardingView, dep: depView };
   const fn = views[parts[0]] || homeView;
   await refreshBadges();
   if (fn !== depView) shell({ nav: globalNav(), ctx: viewChip() + `<span class="sub">${esc(S.me.tenant.name)}</span>` });
@@ -633,6 +634,64 @@ async function homeView() {
     ${out.length ? out.join("") : `<div class="empty">Your home screen has no sections. A workspace admin can add them in Settings → Home screens.</div>`}`);
 }
 
+/* Self-service setup; source data remains editable until activation. */
+async function onboardingView() {
+  const available = await api('/api/onboarding');
+  let draft = null;
+  const fields = ['customer', 'deployment', 'stage', 'health'];
+  const activate = on(async el => {
+    if (!draft || !val('setup_reviewed')) return toast('Review and confirm the preview first.', true);
+    el.disabled = true;
+    try {
+      const result = await api(`/api/onboarding/${encodeURIComponent(draft.id)}/activate`, {method:'POST', body:{reviewed:true}});
+      await loadConfig(); S.cache = {}; draft = null;
+      toast(`${plural(result.created, 'deployment')} ready. Invite your team whenever you like.`);
+      go('chains');
+    } catch (e) { toast(e.message, true); el.disabled = false; }
+  });
+  const review = on(() => { const button = $('#setup_apply'); if(button) button.disabled = !val('setup_reviewed'); });
+  const preview = on(async el => {
+    el.disabled = true; el.textContent = 'Preparing your workspace…';
+    draft = null; $('#setup_preview').textContent = '';
+    try {
+      const result = await api('/api/onboarding/preview', {method:'POST', body:{
+        description:val('setup_description'), csv_text:val('setup_csv'), use_ai:!!val('setup_ai')
+      }});
+      draft = result.id ? result : null;
+      const list = (title, items) => items.length ? `<div class="panel"><h3>${esc(title)}</h3><ul>${items.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>` : '';
+      $('#setup_preview').innerHTML = `<div class="panel"><div class="label">2 · Review your setup</div>
+        <h2>${result.mode === 'ai' ? 'AI suggested setup' : 'Guided setup'}</h2>
+        <p>Review the stages, column mapping and deployments below. Nothing changes until you apply this preview.</p>
+        <p><b>Stages:</b> ${result.stages.map(s=>esc(s.name)).join(' → ')}</p>
+        <p><b>Spreadsheet mapping:</b> ${fields.map(f=>`${esc(f)} ← ${esc(result.mapping[f] || 'not mapped')}`).join(' · ')}</p>
+        <p><b>${plural(result.deployments.length,'deployment')}</b> ready to import. You will be their initial lead.</p>
+        ${result.deployments.length ? `<div style="overflow:auto"><table><thead><tr><th>Customer</th><th>Deployment</th><th>Stage</th><th>Health</th></tr></thead><tbody>${result.deployments.map(x=>`<tr><td>${esc(x.customer)}</td><td>${esc(x.name)}</td><td>${esc(result.stages.find(s=>s.key===x.stage)?.name || x.stage)}</td><td>${esc(x.health)}</td></tr>`).join('')}</tbody></table></div>` : '<p>You can add your first deployment later.</p>'}
+        </div>${list('Correct these items and preview again',result.errors)}${list('Check these defaults',result.warnings)}${list('Questions to consider before applying',result.questions)}
+        ${draft ? `<div class="panel"><label><input id="setup_reviewed" type="checkbox" data-chg="${review}"> I reviewed the stage labels, mapped columns and all deployments.</label>
+        <button id="setup_apply" class="btn primary" disabled data-on="${activate}">Apply setup and open Fieldwork</button><p class="small muted">This preview expires in 30 minutes. Existing deployments, access rules and tool connections are preserved.</p></div>` : ''}`;
+    } catch(e) { $('#setup_preview').textContent=e.message; }
+    finally { el.disabled=false; el.textContent='Preview my setup'; }
+  });
+  const invalidate = () => { draft=null; $('#setup_preview').textContent='Your inputs changed. Generate a fresh preview.'; };
+  const changed = on(invalidate);
+  const upload = on(async el => {
+    const file=el.files?.[0]; if(!file)return;
+    if(file.size>100000)return toast('Use a CSV under 100 KB.',true);
+    $('#setup_csv').value=await file.text(); invalidate();
+  });
+  page(`<div class="headrow"><div><h1>Make Fieldwork yours</h1><p class="lede">A few inputs. A clear preview. Your team can start working.</p></div></div>
+    <div class="panel"><div class="label">1 · Tell us how your team delivers</div>
+    <label for="setup_description">What do you deploy, and what stages do you follow?</label>
+    <textarea id="setup_description" maxlength="4000" rows="4" data-chg="${changed}" placeholder="We deploy healthcare AI. We work through discovery, integration, testing, go-live, adoption and value measurement."></textarea>
+    <label for="setup_csv">Bring your active deployments (optional)</label>
+    <p class="small muted">Upload or paste a CSV. Customer and Deployment are required. Stage and Health are optional. Up to 200 deployments.</p>
+    <input type="file" accept=".csv,text/csv" aria-label="Upload deployment CSV" data-chg="${upload}">
+    <textarea id="setup_csv" rows="7" maxlength="100000" data-chg="${changed}" placeholder="Customer,Deployment,Stage,Health&#10;Acme,Voice agent rollout,Discover,On track"></textarea>
+    <p class="small muted">Unknown stages and invalid rows will get correction instructions before anything is imported. Additional columns are listed in the preview.</p>
+    ${available.ai_available ? `<label><input id="setup_ai" type="checkbox" data-chg="${changed}"> Use AI to suggest stage names and match columns. My description and column headings may be sent to the AI provider; spreadsheet rows stay in Fieldwork.</label>` : '<p class="small muted">Guided setup is available. AI suggestions are currently unavailable.</p>'}
+    <button class="btn primary" data-on="${preview}">Preview my setup</button></div><div id="setup_preview" aria-live="polite"></div>`);
+}
+
 async function gettingStarted(pf) {
   if (!can("deployment.create") && !can("config.edit")) return "";
   const done = { dep: pf.deployments.length > 0 };
@@ -645,6 +704,7 @@ async function gettingStarted(pf) {
   const step = (ok, t, d, btn) => `<div class="row nowrap" style="gap:12px;padding:10px 0;border-top:1px solid var(--line);align-items:flex-start"><span class="mono ${ok ? "good" : "muted"}" style="width:18px">${ok ? "✓" : "○"}</span><div style="flex:1"><div style="font-weight:500">${esc(t)}</div><div class="small muted">${esc(d)}</div></div>${ok ? "" : btn}</div>`;
   const hide = on(() => { S.welcome = false; route(); });
   return `<div class="panel" style="gap:4px;border-color:var(--accent)"><div class="phead"><div class="label">Getting started · ${esc(S.me.tenant.name)}</div>${done.dep ? `<button class="btn xs ghost" data-on="${hide}">Hide</button>` : ""}</div>
+    ${can("config.edit") && can("deployment.create") ? step(false, "Let Fieldwork help you set up", "Describe your delivery process, import active deployments and review your setup.", `<button class="btn sm primary" data-on="${on(() => go("onboarding"))}">Get started</button>`) : ""}
     ${step(done.dep, "Open your first deployment", "A customer and what you're deploying for them. Stages, clocks and the delay ledger start here.", `<button class="btn sm primary" data-on="${on(() => go("chains"))}">Open one</button>`)}
     ${can("people.manage") ? step(done.team, "Invite your team", "Add people with the email they'll sign in with, and pick their role.", `<button class="btn sm" data-on="${on(() => go("team"))}">Invite</button>`) : ""}
     ${cat ? step(done.tools, "Connect Slack and your tracker", "Alerts with buttons, and tasks that sync both ways with GitHub, Linear or Jira.", `<button class="btn sm" data-on="${on(() => go("integrations"))}">Connect</button>`) : ""}

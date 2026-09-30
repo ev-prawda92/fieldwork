@@ -300,7 +300,7 @@ def seed(db_url) -> dict:
 
 DEMO_TENANTS = ("ten_meridian", "ten_orbital")
 # Children before parents, so foreign keys hold on both databases.
-_TENANT_TABLES = ("audit_anchors", "milestone_packets", "milestones", "sows", "feedback", "contact_signals", "time_off", "inbound_events", "oauth_states", "connections",
+_TENANT_TABLES = ("onboarding_plans", "audit_anchors", "milestone_packets", "milestones", "sows", "feedback", "contact_signals", "time_off", "inbound_events", "oauth_states", "connections",
                   "checklist_items", "approvals", "flags", "opportunities", "time_entries", "delays", "reports",
                   "task_links", "outbox", "deployment_stages", "findings", "tasks", "stage_events")
 
