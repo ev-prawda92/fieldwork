@@ -698,7 +698,7 @@ def init(conn: DB) -> None:
 
 def reset(conn: DB) -> None:
     """Drop everything. Used by `fieldwork seed` and tests; never by the API."""
-    tables = ["audit_anchors", "milestone_packets", "milestones", "sows", "feedback", "connections", "oauth_states", "inbound_events", "time_off", "contact_signals", "deployment_stages","delays", "time_entries", "opportunities", "flags", "approvals", "checklist_items", "outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
+    tables = ["ai_cortex_approvals", "ai_lessons", "ai_authority_decisions", "ai_releases", "ai_eval_runs", "ai_eval_jobs", "ai_versions", "onboarding_plans", "audit_anchors", "milestone_packets", "milestones", "sows", "feedback", "connections", "oauth_states", "inbound_events", "time_off", "contact_signals", "deployment_stages","delays", "time_entries", "opportunities", "flags", "approvals", "checklist_items", "outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
               "tasks", "stage_events", "deployment_members", "deployments", "customers", "users",
               "tenants", "schema_migrations"]
     with conn.lock:

@@ -292,3 +292,46 @@ def test_worker_validates_artifact_and_keeps_tokens_separate():
         return response
     with httpx.Client(transport=httpx.MockTransport(mismatched)) as c:
         assert process(c,'https://fieldwork.example','https://runner.example/evaluate','fieldwork-token')['failed']==1
+
+
+def test_seed_after_migration_and_repeated_seed_reset_all_tables(db_url):
+    """Container startup migrates before seeding; Postgres fixtures reuse a database."""
+    import re
+    from fieldwork import db
+    from fieldwork.app import create_app
+    from fieldwork.seed import seed
+    from fastapi.testclient import TestClient
+    conn=db.connect(db_url)
+    try:
+        db.init(conn)
+        seed(conn)
+        c=TestClient(create_app(db_url))
+        try:
+            v=save(c)
+            run(c,v)
+            rollout=release(c,v)
+            assert rollout.status_code==200,rollout.text
+            lesson=c.post(P+'/lessons',headers=H('fde'),json={'version_id':v['id'],'title':'Reset example','pattern':'Support','evidence':'Fixture evidence'})
+            assert lesson.status_code==200,lesson.text
+            body=request(v)
+            assert c.post(P+'/cortex/check',headers=H('fde'),json=body).status_code==200
+            assert c.post(P+'/cortex/approvals',headers=H('fde'),json=body).status_code==200
+            preview=c.post('/api/onboarding/preview',headers=H('head'),json={'csv_text':'Client,Project\nExample,Deployment'})
+            assert preview.status_code==200,preview.text
+        finally:
+            if c.app.state.conn.dialect=='postgres':c.app.state.conn.raw.close()
+        seed(conn)
+        for name in ('ai_versions','ai_eval_jobs','ai_eval_runs','ai_releases','ai_lessons','ai_cortex_approvals','ai_authority_decisions','onboarding_plans'):
+            assert conn.execute(f'SELECT COUNT(*) n FROM {name}').fetchone()['n']==0
+        db.reset(conn)
+        # Every table created by a migration must be removed before rerunning them.
+        names=set(re.findall(r'CREATE TABLE(?: IF NOT EXISTS)?\s+(\w+)', '\n'.join(sql for _,_,sql in db.MIGRATIONS)))
+        if conn.dialect=='postgres':
+            remaining={r['table_name'] for r in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public'").fetchall()}
+        else:
+            remaining={r['name'] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert not names & remaining
+        db.init(conn)
+        seed(conn)
+    finally:
+        conn.raw.close()
