@@ -82,8 +82,42 @@ TOOLS = [
 ]
 
 
+TOOLS += [
+    {"name": "ai_eval_queue", "description": "List pending evaluation jobs for current workflow versions accessible to this caller.", "inputSchema": _s()},
+    {"name": "get_ai_workflow", "description": "Read versioned workflow graph, Cortex policy, evaluations, readiness and rollout packets.", "inputSchema": _s(deployment_id={"type": "string"})},
+    {"name": "save_ai_specification", "description": "Create an immutable workflow version. Read current version first; any change requires fresh observed evaluations.", "inputSchema": _s(deployment_id={"type": "string"}, spec={"type": "object"}, base_version_id={"type": ["string", "null"], "optional": True})},
+    {"name": "evaluate_ai_workflow", "description": "Run a synthetic rehearsal or evaluate caller-attested observed runner traces. Rehearsals cannot unlock rollout.", "inputSchema": _s(deployment_id={"type": "string"}, evaluation={"type": "object"})},
+    {"name": "plan_ai_deployment", "description": "Propose remediation from versioned controls and evaluation evidence. Does not change customer systems.", "inputSchema": _s(deployment_id={"type": "string"})},
+    {"name": "apply_ai_plan", "description": "Create reviewed remediation tasks inside Fieldwork, replay safely. Does not deploy external systems.", "inputSchema": _s(deployment_id={"type": "string"}, version_id={"type": "string"}, reviewed={"type": "boolean"})},
+    {"name": "check_cortex_authority", "description": "Evaluate a proposed tool action using Cortex. Supply full scoped action context and evidence; a caller-supplied approval boolean is forbidden. Runner must enforce the decision.", "inputSchema": _s(deployment_id={"type": "string"}, request={"type": "object"})},
+    {"name": "request_cortex_approval", "description": "Request a separate human approval bound to exact version and scoped action context, after Cortex returns HUMAN_REVIEW.", "inputSchema": _s(deployment_id={"type": "string"}, request={"type": "object"})},
+    {"name": "request_ai_rollout", "description": "Freeze a rollout packet using current observed evidence and request review from another person. Never executes the rollout.", "inputSchema": _s(deployment_id={"type": "string"}, version_id={"type": "string"}, reviewed={"type": "boolean"})},
+    {"name": "ai_registry", "description": "List accessible deployments by pinned agent/model version to inspect upgrade impact. No automatic upgrades.", "inputSchema": _s()},
+    {"name": "deployment_memory", "description": "Read confirmed deployment lessons within this workspace and your authorized deployment scope.", "inputSchema": _s()},
+]
+
+
 def _route(name: str, a: dict) -> tuple[str, str, dict | None]:
     dep = a.get("deployment_id", "")
+    ai_routes = {
+        "get_ai_workflow": ("GET", "", None),
+        "save_ai_specification": ("PUT", "/spec", {"spec": a.get("spec"), "base_version_id": a.get("base_version_id")}),
+        "evaluate_ai_workflow": ("POST", "/evals", a.get("evaluation")),
+        "plan_ai_deployment": ("GET", "/plan", None),
+        "apply_ai_plan": ("POST", "/plan/apply", {"version_id": a.get("version_id"), "reviewed": a.get("reviewed")}),
+        "check_cortex_authority": ("POST", "/cortex/check", a.get("request")),
+        "request_cortex_approval": ("POST", "/cortex/approvals", a.get("request")),
+        "request_ai_rollout": ("POST", "/releases", {"version_id": a.get("version_id"), "reviewed": a.get("reviewed")}),
+    }
+    if name in ai_routes:
+        method, suffix, body = ai_routes[name]
+        return method, f"/api/deployments/{dep}/ai"+suffix, body
+    if name == "ai_eval_queue":
+        return "GET", "/api/ai/eval-jobs", None
+    if name == "ai_registry":
+        return "GET", "/api/ai/registry", None
+    if name == "deployment_memory":
+        return "GET", "/api/ai/memory", None
     if name == "today":
         return "GET", "/api/today", None
     if name == "list_deployments":
@@ -172,7 +206,7 @@ def register(app) -> None:
             who = me.json()
             return JSONResponse({"jsonrpc": "2.0", "id": mid, "result": {
                 "protocolVersion": ver, "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "fieldwork", "title": who["branding"]["product_name"], "version": "0.8.0"},
+                "serverInfo": {"name": "fieldwork", "title": who["branding"]["product_name"], "version": "0.9.0"},
                 "instructions": (f"You are working in {who['tenant']['name']}'s deployment workspace as "
                                  f"{who['user']['name']} ({who['user']['role_name']}). Engine results are saved as "
                                  "findings that another person must confirm; say so rather than presenting them as final.")}})

@@ -70,6 +70,10 @@ EVENTS = {
 TRACKERS = ("github", "linear", "jira")
 
 ACTIONS = {
+    "ai.view": "See internal AI workflow specifications and evidence",
+    "ai.edit": "Version AI workflow specifications",
+    "ai.evaluate": "Submit AI evaluation evidence and run rehearsals",
+    "ai.release": "Review AI rollout requests",
     "deployment.view":    "See deployments",
     "deployment.create":  "Open a new customer deployment",
     "deployment.advance": "Move a deployment to its next stage and mark stages done, skipped or in progress",
@@ -117,6 +121,10 @@ DEFAULT_CONFIG: dict = {
         {"key": "customer", "name": "Customer Stakeholder"},
     ],
     "permissions": {
+        "ai.view": {"head": "all", "engagement_manager": "own", **{r: "own" for r in DOERS}},
+        "ai.edit": {"head": "all", "engagement_manager": "own", **{r: "own" for r in DOERS}},
+        "ai.evaluate": {"head": "all", "engagement_manager": "own", **{r: "own" for r in DOERS}},
+        "ai.release": {"head": "all", "engagement_manager": "own"},
         "deployment.view":    {"head": "all", "engagement_manager": "own", "customer": "own",
                                **{r: "own" for r in DOERS}},
         "deployment.create":  {"head": "all", "engagement_manager": "all"},
@@ -428,6 +436,10 @@ def validate(cfg: dict, allow_http_engines: bool = False, known_urls: frozenset 
 # When a release adds an action, existing workspaces inherit it from the action
 # that best matches its intent, so nobody silently loses (or gains) access.
 DERIVE = {
+    "ai.view": "finding.view_internal",
+    "ai.edit": "deployment.edit",
+    "ai.evaluate": "engine.run",
+    "ai.release": "approval.decide",
     "task.view_internal": "task.create",
     "finding.view_internal": "engine.run",
     "customer.share": "task.assign",

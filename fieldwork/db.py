@@ -495,6 +495,69 @@ CREATE TABLE IF NOT EXISTS audit_anchors (
 );
 CREATE INDEX IF NOT EXISTS ix_anchor_tenant ON audit_anchors(tenant_id, seq)
 """),
+    (11, "self-service setup plans", """
+CREATE TABLE IF NOT EXISTS onboarding_plans (
+ id TEXT PRIMARY KEY,
+ tenant_id TEXT NOT NULL REFERENCES tenants(id),
+ actor_id TEXT NOT NULL REFERENCES users(id),
+ config_hash TEXT NOT NULL,
+ plan_json TEXT NOT NULL,
+ expires_at TEXT NOT NULL,
+ result_json TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_onboarding_tenant ON onboarding_plans(tenant_id, expires_at);
+"""),
+    (12, "versioned AI deployments and evidence", """
+CREATE TABLE ai_versions (
+ id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
+ deployment_id TEXT NOT NULL REFERENCES deployments(id), revision INTEGER NOT NULL,
+ spec_json TEXT NOT NULL, fingerprint TEXT NOT NULL, changes_json TEXT NOT NULL,
+ created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL,
+ UNIQUE(tenant_id, deployment_id, revision)
+);
+CREATE INDEX ix_ai_versions ON ai_versions(tenant_id, deployment_id, revision);
+CREATE TABLE ai_eval_jobs (
+ id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
+ deployment_id TEXT NOT NULL REFERENCES deployments(id), version_id TEXT NOT NULL REFERENCES ai_versions(id),
+ status TEXT NOT NULL, reason_json TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT
+);
+CREATE INDEX ix_ai_jobs ON ai_eval_jobs(tenant_id,status);
+CREATE TABLE ai_eval_runs (
+ id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
+ deployment_id TEXT NOT NULL REFERENCES deployments(id), version_id TEXT NOT NULL REFERENCES ai_versions(id),
+ mode TEXT NOT NULL, runner TEXT NOT NULL, evidence_ref TEXT NOT NULL,
+ results_json TEXT NOT NULL, passed INTEGER NOT NULL,
+ created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL
+);
+CREATE INDEX ix_ai_runs ON ai_eval_runs(tenant_id, deployment_id, version_id);
+CREATE TABLE ai_releases (
+ id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
+ deployment_id TEXT NOT NULL REFERENCES deployments(id), version_id TEXT NOT NULL REFERENCES ai_versions(id),
+ run_id TEXT NOT NULL REFERENCES ai_eval_runs(id), status TEXT NOT NULL,
+ requested_by TEXT NOT NULL REFERENCES users(id), decided_by TEXT REFERENCES users(id),
+ note TEXT NOT NULL, packet_json TEXT NOT NULL, created_at TEXT NOT NULL, decided_at TEXT,
+ UNIQUE(tenant_id, version_id, run_id)
+);
+CREATE INDEX ix_ai_releases ON ai_releases(tenant_id, deployment_id);
+CREATE TABLE ai_cortex_approvals (
+ approval_id TEXT PRIMARY KEY REFERENCES approvals(id), tenant_id TEXT NOT NULL REFERENCES tenants(id),
+ deployment_id TEXT NOT NULL REFERENCES deployments(id), version_id TEXT NOT NULL REFERENCES ai_versions(id),
+ context_hash TEXT NOT NULL
+);
+CREATE TABLE ai_authority_decisions (
+ id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
+ deployment_id TEXT NOT NULL REFERENCES deployments(id), version_id TEXT NOT NULL REFERENCES ai_versions(id),
+ request_json TEXT NOT NULL, result_json TEXT NOT NULL, created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL
+);
+CREATE INDEX ix_ai_authority ON ai_authority_decisions(tenant_id,deployment_id);
+CREATE TABLE ai_lessons (
+ id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id),
+ deployment_id TEXT NOT NULL REFERENCES deployments(id), version_id TEXT NOT NULL REFERENCES ai_versions(id),
+ title TEXT NOT NULL, pattern TEXT NOT NULL, evidence TEXT NOT NULL,
+ created_by TEXT NOT NULL REFERENCES users(id), confirmed_by TEXT REFERENCES users(id), created_at TEXT NOT NULL
+);
+CREATE INDEX ix_ai_lessons ON ai_lessons(tenant_id, pattern);
+"""),
 ]
 
 _AUTO = {"sqlite": "INTEGER PRIMARY KEY AUTOINCREMENT", "postgres": "BIGSERIAL PRIMARY KEY"}

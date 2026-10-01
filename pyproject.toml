@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fieldwork"
-version = "0.8.0"
-description = "The deployment engine for deployment teams: run every deployment, see why it stalls, prove what it delivered."
+version = "0.9.0"
+description = "The deployment layer for enterprise AI."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Evan Prawda", email = "evanprawda92@gmail.com" }]

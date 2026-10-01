@@ -441,6 +441,8 @@ function globalNav() {
     ["import", "Import", "CSV in", can("deployment.create") || can("pipeline.edit") || can("people.read")],
     ["ai", "AI tools", "MCP · agents", k !== "customer"],
     ["audit", "Audit trail", "Hash-chained", can("audit.read")],
+    ["ai_registry", "AI registry", "Models · deployment impact", can("ai.view")],
+    ["onboarding", "Get started", "Set up your workspace", can("config.edit") && can("deployment.create")],
     ["settings", "Settings", "Your methodology", can("config.edit") || can("engine.manage")],
   ];
   let i = 0;
@@ -459,6 +461,7 @@ function depNav(d, page) {
   const item = (key, label, src, n, extra = "") => `<button class="navitem ${page === key ? "on" : ""}" data-on="${on(() => go(`dep/${d.id}/${key}`))}"><span class="l"><span class="t">${esc(label)}${extra}</span><span class="s">${esc(src)}</span></span><span class="n">${n}</span></button>`;
   let h = back + item("overview", "Overview", internal ? "Tasks · team · plan" : "What's shared with you", "00");
   if (!internal) return h;
+  if (d.you_can.includes("ai.view")) h += item("ai", "AI workflow", "Versions · Cortex · evals", "AI");
   const st = Object.fromEntries(((d._row || {}).stages || []).map(x => [x.key, x]));
   S.cfg.stages.forEach((s, i) => {
     const x = st[s.key] || {};
@@ -506,7 +509,7 @@ async function route() {
   S.route = parts;
   const views = { home: homeView, chains: chainsView, projects: projectsView, pipeline: pipelineView, portfolio: portfolioView,
     delays: delaysView, team: teamView, work: workView, integrations: integrationsView, import: importView, ai: aiView,
-    audit: auditView, settings: settingsView, dep: depView };
+    audit: auditView, settings: settingsView, onboarding: onboardingView, ai_registry: aiRegistryView, dep: depView };
   const fn = views[parts[0]] || homeView;
   await refreshBadges();
   if (fn !== depView) shell({ nav: globalNav(), ctx: viewChip() + `<span class="sub">${esc(S.me.tenant.name)}</span>` });
@@ -633,6 +636,64 @@ async function homeView() {
     ${out.length ? out.join("") : `<div class="empty">Your home screen has no sections. A workspace admin can add them in Settings → Home screens.</div>`}`);
 }
 
+/* Self-service setup; source data remains editable until activation. */
+async function onboardingView() {
+  const available = await api('/api/onboarding');
+  let draft = null;
+  const fields = ['customer', 'deployment', 'stage', 'health'];
+  const activate = on(async el => {
+    if (!draft || !val('setup_reviewed')) return toast('Review and confirm the preview first.', true);
+    el.disabled = true;
+    try {
+      const result = await api(`/api/onboarding/${encodeURIComponent(draft.id)}/activate`, {method:'POST', body:{reviewed:true}});
+      await loadConfig(); S.cache = {}; draft = null;
+      toast(`${plural(result.created, 'deployment')} ready. Invite your team whenever you like.`);
+      go('chains');
+    } catch (e) { toast(e.message, true); el.disabled = false; }
+  });
+  const review = on(() => { const button = $('#setup_apply'); if(button) button.disabled = !val('setup_reviewed'); });
+  const preview = on(async el => {
+    el.disabled = true; el.textContent = 'Preparing your workspace…';
+    draft = null; $('#setup_preview').textContent = '';
+    try {
+      const result = await api('/api/onboarding/preview', {method:'POST', body:{
+        description:val('setup_description'), csv_text:val('setup_csv'), use_ai:!!val('setup_ai')
+      }});
+      draft = result.id ? result : null;
+      const list = (title, items) => items.length ? `<div class="panel"><h3>${esc(title)}</h3><ul>${items.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>` : '';
+      $('#setup_preview').innerHTML = `<div class="panel"><div class="label">2 · Review your setup</div>
+        <h2>${result.mode === 'ai' ? 'AI suggested setup' : 'Guided setup'}</h2>
+        <p>Review the stages, column mapping and deployments below. Nothing changes until you apply this preview.</p>
+        <p><b>Stages:</b> ${result.stages.map(s=>esc(s.name)).join(' → ')}</p>
+        <p><b>Spreadsheet mapping:</b> ${fields.map(f=>`${esc(f)} ← ${esc(result.mapping[f] || 'not mapped')}`).join(' · ')}</p>
+        <p><b>${plural(result.deployments.length,'deployment')}</b> ready to import. You will be their initial lead.</p>
+        ${result.deployments.length ? `<div style="overflow:auto"><table><thead><tr><th>Customer</th><th>Deployment</th><th>Stage</th><th>Health</th></tr></thead><tbody>${result.deployments.map(x=>`<tr><td>${esc(x.customer)}</td><td>${esc(x.name)}</td><td>${esc(result.stages.find(s=>s.key===x.stage)?.name || x.stage)}</td><td>${esc(x.health)}</td></tr>`).join('')}</tbody></table></div>` : '<p>You can add your first deployment later.</p>'}
+        </div>${list('Correct these items and preview again',result.errors)}${list('Check these defaults',result.warnings)}${list('Questions to consider before applying',result.questions)}
+        ${draft ? `<div class="panel"><label><input id="setup_reviewed" type="checkbox" data-chg="${review}"> I reviewed the stage labels, mapped columns and all deployments.</label>
+        <button id="setup_apply" class="btn primary" disabled data-on="${activate}">Apply setup and open Fieldwork</button><p class="small muted">This preview expires in 30 minutes. Existing deployments, access rules and tool connections are preserved.</p></div>` : ''}`;
+    } catch(e) { $('#setup_preview').textContent=e.message; }
+    finally { el.disabled=false; el.textContent='Preview my setup'; }
+  });
+  const invalidate = () => { draft=null; $('#setup_preview').textContent='Your inputs changed. Generate a fresh preview.'; };
+  const changed = on(invalidate);
+  const upload = on(async el => {
+    const file=el.files?.[0]; if(!file)return;
+    if(file.size>100000)return toast('Use a CSV under 100 KB.',true);
+    $('#setup_csv').value=await file.text(); invalidate();
+  });
+  page(`<div class="headrow"><div><h1>Make Fieldwork yours</h1><p class="lede">A few inputs. A clear preview. Your team can start working.</p></div></div>
+    <div class="panel"><div class="label">1 · Tell us how your team delivers</div>
+    <label for="setup_description">What do you deploy, and what stages do you follow?</label>
+    <textarea id="setup_description" maxlength="4000" rows="4" data-chg="${changed}" placeholder="We deploy healthcare AI. We work through discovery, integration, testing, go-live, adoption and value measurement."></textarea>
+    <label for="setup_csv">Bring your active deployments (optional)</label>
+    <p class="small muted">Upload or paste a CSV. Customer and Deployment are required. Stage and Health are optional. Up to 200 deployments.</p>
+    <input type="file" accept=".csv,text/csv" aria-label="Upload deployment CSV" data-chg="${upload}">
+    <textarea id="setup_csv" rows="7" maxlength="100000" data-chg="${changed}" placeholder="Customer,Deployment,Stage,Health&#10;Acme,Voice agent rollout,Discover,On track"></textarea>
+    <p class="small muted">Unknown stages and invalid rows will get correction instructions before anything is imported. Additional columns are listed in the preview.</p>
+    ${available.ai_available ? `<label><input id="setup_ai" type="checkbox" data-chg="${changed}"> Use AI to suggest stage names and match columns. My description and column headings may be sent to the AI provider; spreadsheet rows stay in Fieldwork.</label>` : '<p class="small muted">Guided setup is available. AI suggestions are currently unavailable.</p>'}
+    <button class="btn primary" data-on="${preview}">Preview my setup</button></div><div id="setup_preview" aria-live="polite"></div>`);
+}
+
 async function gettingStarted(pf) {
   if (!can("deployment.create") && !can("config.edit")) return "";
   const done = { dep: pf.deployments.length > 0 };
@@ -645,6 +706,7 @@ async function gettingStarted(pf) {
   const step = (ok, t, d, btn) => `<div class="row nowrap" style="gap:12px;padding:10px 0;border-top:1px solid var(--line);align-items:flex-start"><span class="mono ${ok ? "good" : "muted"}" style="width:18px">${ok ? "✓" : "○"}</span><div style="flex:1"><div style="font-weight:500">${esc(t)}</div><div class="small muted">${esc(d)}</div></div>${ok ? "" : btn}</div>`;
   const hide = on(() => { S.welcome = false; route(); });
   return `<div class="panel" style="gap:4px;border-color:var(--accent)"><div class="phead"><div class="label">Getting started · ${esc(S.me.tenant.name)}</div>${done.dep ? `<button class="btn xs ghost" data-on="${hide}">Hide</button>` : ""}</div>
+    ${can("config.edit") && can("deployment.create") ? step(false, "Let Fieldwork help you set up", "Describe your delivery process, import active deployments and review your setup.", `<button class="btn sm primary" data-on="${on(() => go("onboarding"))}">Get started</button>`) : ""}
     ${step(done.dep, "Open your first deployment", "A customer and what you're deploying for them. Stages, clocks and the delay ledger start here.", `<button class="btn sm primary" data-on="${on(() => go("chains"))}">Open one</button>`)}
     ${can("people.manage") ? step(done.team, "Invite your team", "Add people with the email they'll sign in with, and pick their role.", `<button class="btn sm" data-on="${on(() => go("team"))}">Invite</button>`) : ""}
     ${cat ? step(done.tools, "Connect Slack and your tracker", "Alerts with buttons, and tasks that sync both ways with GitHub, Linear or Jira.", `<button class="btn sm" data-on="${on(() => go("integrations"))}">Connect</button>`) : ""}
@@ -1148,6 +1210,80 @@ async function workView() {
 <script>
 "use strict";
 /* ======================================================== deployment */
+async function aiRegistryView() {
+  const r = await api('/api/ai/registry');
+  const memory = await api('/api/ai/memory');
+  $('#page').innerHTML = `<div class="pagehead"><div><div class="label">AI deployment layer</div><h1>One record for every agent workflow</h1><p class="muted">See which customer workflows use each model. Upgrades create a version and require fresh evaluations.</p></div></div>
+    <div class="panel"><h2>Agent and model registry</h2><label>Filter by model, provider or agent<input id="ai_filter" placeholder="Search deployed specifications" data-chg="${on(el => { const q=el.value.toLowerCase(); document.querySelectorAll('[data-ai-row]').forEach(row => row.hidden=!row.textContent.toLowerCase().includes(q)); })}"></label>
+    <div style="overflow:auto"><table><thead><tr><th>Agent</th><th>Model</th><th>Version</th><th>Evidence</th><th></th></tr></thead><tbody>${r.deployments.map(x => `<tr data-ai-row><td>${esc(x.agent)}</td><td>${esc(x.provider)} / ${esc(x.model)}</td><td>v${x.revision}</td><td class="${x.ready?'good':'warn'}">${x.ready?'Ready for review':'Needs evidence or controls'}</td><td><button class="btn sm" data-on="${on(() => go(`dep/${x.deployment_id}/ai`))}">Open workflow</button></td></tr>`).join('') || '<tr><td colspan="5">Open a deployment and choose AI workflow to define its first agent.</td></tr>'}</tbody></table></div></div>
+    <div class="panel"><h2>Reviewed deployment memory</h2><p class="small muted">Lessons stay within your workspace and your deployment access. A second person confirms them before reuse.</p>${memory.lessons.map(x=>`<div style="margin:12px 0"><b>${esc(x.title)}</b><p>${esc(x.pattern)} · ${esc(x.evidence)}</p></div>`).join('') || '<p class="muted">No confirmed lessons yet.</p>'}</div>`;
+}
+
+async function aiDeploymentPage(d, reload, proposed=null) {
+  const base=`/api/deployments/${d.id}/ai`;
+  const a=await api(base);
+  const v=a.current;
+  const editable=d.you_can.includes('ai.edit');
+  const evaluator=d.you_can.includes('ai.evaluate');
+  const reviewer=d.you_can.includes('ai.release');
+  let draft=proposed || (v ? structuredClone(v.spec) : await api(base+'/example'));
+  const refresh=async () => { toast('Saved to the deployment record'); await reload(); };
+  const requestReview=on(async () => { await api(base+'/releases',{method:'POST',body:{version_id:v.id,reviewed:true}}); await refresh(); });
+  const save=on(async () => {
+    draft.workflow=val('ai_workflow');draft.trigger=val('ai_trigger');draft.description=val('ai_description');
+    for (const k of ['name','provider','model','policy_version','artifact_ref','prompt']) draft.agent[k]=val('ai_'+k);
+    for (const k of ['owner','escalation_owner','rollback','monitoring']) draft.controls[k]=val('ai_'+k);
+    draft.controls.authority_enabled=$('#ai_authority').checked;
+    draft.kpi={metric:val('ai_metric'),baseline:val('ai_baseline')===''?null:Number(val('ai_baseline')),target:val('ai_target')===''?null:Number(val('ai_target')),unit:val('ai_unit')};
+    draft.systems.forEach((x,i)=>{ x.owner=val('ai_sys_owner_'+i);x.access=val('ai_sys_access_'+i); });
+    draft.tools.forEach((x,i)=>{ x.permission=val('ai_tool_perm_'+i);x.human_gate=$('#ai_tool_gate_'+i).checked; });
+    draft.evals=JSON.parse(val('ai_cases'));
+    await api(base+'/spec',{method:'PUT',body:{base_version_id:v?v.id:null,spec:draft}}); await refresh();
+  });
+  const run=fail=>on(async () => { await api(base+'/evals',{method:'POST',body:{version_id:v.id,mode:'rehearsal',simulate_failure:fail||null}}); await refresh(); });
+  const plan=on(async () => {
+    const r=await api(base+'/plan');
+    $('#ai_plan').innerHTML=`<h3>Deployment assistant</h3><p>${esc(r.notice)}</p>${r.tasks.map(x=>`<p>• ${esc(x.title)}</p>`).join('') || '<p>Ready to request rollout review.</p>'}${editable&&r.tasks.length?`<button class="btn" data-on="${on(async()=>{await api(base+'/plan/apply',{method:'POST',body:{version_id:v.id,reviewed:true}});await refresh();})}">I reviewed these tasks — create them</button>`:''}`;
+  });
+  const observed=on(async()=>{
+    const payload=JSON.parse(val('ai_observed'));
+    await api(base+'/evals',{method:'POST',body:{...payload,version_id:v.id,mode:'observed'}});await refresh();
+  });
+  const field=(key,label,value,area=false)=>`<label>${esc(label)}${area?`<textarea id="ai_${key}" rows="3" ${editable?'':'disabled'}>${esc(value??'')}</textarea>`:`<input id="ai_${key}" value="${esc(value??'')}" ${editable?'':'disabled'}>`}</label>`;
+  const graph=a.graph;
+  const edgeRows=graph?graph.edges.map(e=>{
+    const from=graph.nodes.find(n=>n.id===e.from), to=graph.nodes.find(n=>n.id===e.to);
+    return `<tr><td>${esc(from.label)}</td><td>→ ${esc(to.label)}</td><td class="muted">${esc(to.kind)}</td></tr>`;
+  }).join(''):'';
+  const checks=a.readiness.checks;
+  const sample={runner:'your-agent-runner',evidence_ref:'link-to-your-run-log',artifact_ref:draft.agent.artifact_ref,traces:[{case_id:'answer',output:'The policy says…',tools_called:['box.search'],citation_count:1,latency_ms:500,human_approved:false,escalated:false}]};
+  $('#page').innerHTML=`<div class="pagehead"><div><div class="label">Fieldwork + Cortex</div><h1>${v?esc(v.spec.workflow):'Define the AI workflow'}</h1><p class="muted">${v?`Version ${v.revision} · ${esc(v.spec.agent.model)}`:'Map the systems, agent, authority and tests before rollout.'}</p></div></div>
+    <div class="panel"><div class="row"><h2>${a.readiness.ready?'Ready for rollout review':'Production readiness'}</h2><div class="spacer"></div>${v?`<button class="btn" data-on="${plan}">Ask deployment assistant</button>`:''}${v&&editable&&a.readiness.ready?`<button class="btn primary" data-on="${requestReview}">Request rollout review</button>`:''}</div>
+    <p class="small muted">Observed evaluations and a separate reviewer are required. Approval prepares the rollout; your deployment runtime executes it.</p>
+    ${a.readiness.blockers.map(x=>`<p class="warn">○ ${esc(x)}</p>`).join('')}
+    ${checks.filter(x=>x.passed).map(x=>`<span class="chip" style="display:inline-block;margin:3px">✓ ${esc(x.label)}</span>`).join('')}<div id="ai_plan"></div></div>
+    ${v?`<details class="panel" open><summary><b>Deployment graph</b> · ${graph.nodes.length} objects</summary><div style="overflow:auto"><table><thead><tr><th>From</th><th>Connects to</th><th>Object</th></tr></thead><tbody>${edgeRows}</tbody></table></div></details>`:''}
+    ${!v&&editable?`<details class="panel"><summary><b>Start from your workflow</b></summary><label>Workflow name<input id="ai_discovery_name" placeholder="Support escalation"></label><label>Trigger<input id="ai_discovery_trigger" placeholder="A support case needs engineering review"></label><label>Systems, comma separated<input id="ai_discovery_systems" placeholder="Box, Salesforce, GitHub"></label><label>Human handoffs, comma separated<input id="ai_discovery_handoffs" placeholder="Support, engineering, supervisor"></label><button class="btn" data-on="${on(async()=>{const names=val('ai_discovery_systems').split(',').map(x=>x.trim()).filter(Boolean);const r=await api(base+'/discover',{method:'POST',body:{workflow:val('ai_discovery_name'),trigger:val('ai_discovery_trigger'),systems:names.map((name,i)=>({id:'system-'+i,name})),handoffs:val('ai_discovery_handoffs').split(',').map(x=>x.trim()).filter(Boolean)}});await aiDeploymentPage(d,reload,r.spec);toast('Review the proposed workflow. No systems have been connected yet.');})}">Propose workflow from metadata</button></details>`:''}
+    <details class="panel" ${v?'':'open'}><summary><b>Workflow specification</b> · ${v?'Save changes as a new version':'Review the example before saving'}</summary>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin:16px 0">${field('workflow','Business workflow',draft.workflow)}${field('trigger','Trigger',draft.trigger)}${field('description','Workflow description',draft.description,true)}${field('name','Agent name',draft.agent.name)}${field('provider','Model provider',draft.agent.provider)}${field('model','Pinned model version',draft.agent.model)}${field('policy_version','Authority policy version',draft.agent.policy_version)}${field('artifact_ref','Executable agent artifact reference',draft.agent.artifact_ref)}${field('prompt','Agent instructions',draft.agent.prompt,true)}</div>
+    ${editable?`<details style="margin:16px 0"><summary>Import or edit a full specification</summary><p class="small muted">Add systems, tools, scope limits and cases here, then review the workflow form before saving.</p><textarea id="ai_full_spec" rows="14" style="font-family:monospace">${esc(JSON.stringify(draft,null,2))}</textarea><button class="btn" data-on="${on(async()=>{const spec=JSON.parse(val('ai_full_spec'));await aiDeploymentPage(d,reload,spec);toast('Review the imported specification before saving');})}">Review imported specification</button></details>`:''}
+    <h3>Systems and tool permissions</h3>${draft.systems.map((x,i)=>`<div class="panel"><b>${esc(x.name)}</b><div class="row"><label>System owner<input id="ai_sys_owner_${i}" value="${esc(x.owner)}" ${editable?'':'disabled'}></label><label>Access status<select id="ai_sys_access_${i}" ${editable?'':'disabled'}>${['unknown','requested','verified'].map(z=>`<option ${z===x.access?'selected':''}>${z}</option>`).join('')}</select></label></div>${draft.tools.filter(t=>t.system_id===x.id).map(t=>{const n=draft.tools.indexOf(t);return `<div class="row"><span>${esc(t.id)} · ${esc(t.action)}</span><label>Scoped permission<input id="ai_tool_perm_${n}" value="${esc(t.permission)}" ${editable?'':'disabled'}></label><label><input type="checkbox" id="ai_tool_gate_${n}" ${t.human_gate?'checked':''} ${editable?'':'disabled'}> Human approval gate</label></div>`}).join('')}</div>`).join('')}
+    <h3>Ownership and controls</h3><label><input type="checkbox" id="ai_authority" ${draft.controls.authority_enabled?'checked':''} ${editable?'':'disabled'}> I reviewed the scoped grants and want Cortex authority active</label><p class="small muted">Cortex policy is deny by default. Scope and rate/financial limits are part of the versioned specification.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px">${field('owner','Workflow owner',draft.controls.owner)}${field('escalation_owner','Escalation owner',draft.controls.escalation_owner)}${field('rollback','Rollback procedure',draft.controls.rollback,true)}${field('monitoring','Monitoring procedure',draft.controls.monitoring,true)}${field('metric','Business metric',draft.kpi.metric)}${field('baseline','Baseline',draft.kpi.baseline??'')}${field('target','Target',draft.kpi.target??'')}${field('unit','Unit',draft.kpi.unit)}</div>
+    <details style="margin:16px 0"><summary>Evaluation suite · ${draft.evals.length} cases</summary><p class="small muted">Each case defines the expected tool allowlist and deterministic assertions. Add representative examples and edge cases from your workflow.</p><textarea id="ai_cases" rows="18" style="font-family:monospace" ${editable?'':'disabled'}>${esc(JSON.stringify(draft.evals,null,2))}</textarea></details>
+    ${editable?`<button class="btn primary" data-on="${save}">${v?'Save new version':'Create workflow specification'}</button>`:''}</details>
+    ${v?`<div class="panel"><h2>Cortex authority</h2><p class="small muted">${esc(a.authority.notice)}</p><div class="row"><span class="chip">${esc(a.authority.profile.status)} · default BLOCK</span><span>${a.authority.scenarios.filter(x=>x.passed).length}/${a.authority.scenarios.length} policy scenarios pass</span></div>
+    <details><summary>Inspect authority checks</summary>${a.authority.scenarios.map(x=>`<p class="${x.passed?'good':'bad'}">${x.passed?'✓':'✕'} ${esc(x.name)} → ${esc(x.decision)}</p>`).join('')}</details>
+    ${evaluator?`<label>Proposed action context<textarea id="ai_cortex_request" rows="7" style="font-family:monospace">${esc(JSON.stringify({version_id:v.id,tool_id:draft.tools[0]?.id||'unlisted',environment:'staging',target_system:draft.tools[0]?.system_id||'unknown',data_scope:'support',financial_impact:0,actions_last_hour:0,evidence:[{type:'source',current:true,reference:'your-case-record'}]},null,2))}</textarea></label><div class="row"><button class="btn" data-on="${on(async()=>{const r=await api(base+'/cortex/check',{method:'POST',body:JSON.parse(val('ai_cortex_request'))});$('#ai_cortex_result').textContent=JSON.stringify(r,null,2);})}">Check proposed action</button><button class="btn" data-on="${on(async()=>{const r=await api(base+'/cortex/approvals',{method:'POST',body:JSON.parse(val('ai_cortex_request'))});$('#ai_cortex_result').textContent='Approval requested: '+r.id+'. Review from Today → Approvals.';})}">Request human approval</button></div><pre id="ai_cortex_result" style="white-space:pre-wrap"></pre>`:''}</div>
+    <div class="panel"><h2>Living evaluations</h2><p class="small muted">Rehearsals use generated fixtures and test the evaluation plumbing. Submit real agent traces to assess the current workflow.</p>
+    ${evaluator?`<div class="row"><button class="btn" data-on="${run()}">Run synthetic rehearsal</button><button class="btn" data-on="${run(draft.evals[0]?.id)}">Rehearse a regression</button></div><details style="margin:12px 0"><summary>Submit observed agent traces</summary><p>Include every evaluation case and a reference to the runner's evidence. Fieldwork attributes the evidence to you and checks its assertions.</p><textarea id="ai_observed" rows="12" style="font-family:monospace">${esc(JSON.stringify(sample,null,2))}</textarea><button class="btn" data-on="${observed}">Submit and evaluate traces</button></details>`:''}
+    ${a.runs.map(r=>`<details style="margin:12px 0"><summary><b class="${r.passed?'good':'bad'}">${r.passed?'Pass':'Fail'}</b> · ${esc(r.mode)} · ${esc(r.runner)} · ${esc(r.created_at.slice(0,19))}${r.version_id!==v.id?' · previous version':''}</summary>${r.results.map(x=>`<p>${x.passed?'✓':'✕'} ${esc(x.name)} <span class="muted">${esc(x.category)}</span> ${esc(x.failures.join('; '))}</p>`).join('')}</details>`).join('')||'<p class="muted">No evaluation runs yet.</p>'}</div>
+    <div class="panel"><h2>Rollout reviews</h2>${a.releases.map(r=>`<div style="margin:14px 0"><b>${esc(r.status)}</b> ${!r.current?'· previous version':r.status==='approved_for_rollout'&&!r.effective?'· approval needs fresh evidence':''}<p class="small mono">Packet ${esc(r.packet.packet_hash)}</p><p>${esc(r.note)}</p>${r.current&&r.status==='pending'&&reviewer&&r.requested_by!==S.me.user.id?`<label>Review note<input id="ai_review_${r.id}"></label><div class="row">${[true,false].map(approve=>`<button class="btn" data-on="${on(async()=>{await api(base+'/releases/'+r.id+'/decide',{method:'POST',body:{approve,note:val('ai_review_'+r.id)}});await refresh();})}">${approve?'Approve for rollout':'Reject'}</button>`).join('')}</div>`:''}</div>`).join('')||'<p class="muted">No rollout requests. Fresh evidence and complete controls unlock review.</p>'}</div>
+    <details class="panel"><summary><b>Version history</b> · ${a.versions.length} versions</summary>${a.versions.map(x=>`<div style="margin:16px 0"><b>v${x.revision} · ${esc(x.spec.agent.model)}</b><p>${esc(x.changes.fields.join(', '))}</p><p>${x.changes.affected_evals.length} dependent evals affected · ${x.changes.required_evals.length} required for this version</p><p class="small mono">${esc(x.fingerprint)}</p><button class="btn sm" data-on="${on(()=>{const blob=new Blob([JSON.stringify(x.spec,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download='fieldwork-spec-v'+x.revision+'.json';link.click();URL.revokeObjectURL(url);})}">Export specification</button></div>`).join('')}</details>
+    <div class="panel"><h2>Deployment lessons</h2>${a.lessons.map(x=>`<div style="margin:14px 0"><b>${esc(x.title)}</b><p>${esc(x.pattern)} · ${esc(x.evidence)}</p><span class="small muted">${x.confirmed_by?'Confirmed for workspace reuse':'Waiting for a second person to confirm'}</span>${!x.confirmed_by&&x.created_by!==S.me.user.id&&d.you_can.includes('finding.confirm')?` <button class="btn sm" data-on="${on(async()=>{await api(base+'/lessons/'+x.id+'/confirm',{method:'POST'});await refresh();})}">Confirm lesson</button>`:''}</div>`).join('')||'<p class="muted">Record evidence from this deployment for later reuse.</p>'}</div>
+    ${editable?`<details class="panel"><summary><b>Record a deployment lesson</b></summary><label>Lesson<input id="ai_lesson_title" placeholder="What helped or failed?"></label><label>Reusable pattern<input id="ai_lesson_pattern" placeholder="Box support workflows"></label><label>Evidence<textarea id="ai_lesson_evidence" rows="3" placeholder="Link or reference to the observed deployment evidence"></textarea></label><button class="btn" data-on="${on(async()=>{await api(base+'/lessons',{method:'POST',body:{version_id:v.id,title:val('ai_lesson_title'),pattern:val('ai_lesson_pattern'),evidence:val('ai_lesson_evidence')}});await refresh();})}">Propose lesson for review</button></details>`:''}`:''}`;
+}
+
 async function depView(id, pg = "overview") {
   const d = await api(`/api/deployments/${id}`);
   const port = await api("/api/portfolio");
@@ -1159,6 +1295,7 @@ async function depView(id, pg = "overview") {
   const reload = () => route();
   if (pg === "overview") return internal ? depOverview(d, row, reload) : customerOverview(d, row, reload);
   if (pg === "bench") return benchPage(d, reload);
+  if (pg === "ai") return aiDeploymentPage(d, reload);
   return stagePage(d, row, pg, reload);
 }
 
