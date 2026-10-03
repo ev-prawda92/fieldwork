@@ -127,8 +127,8 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
     """background=True (used by `serve`) starts the outbox worker and, in demo mode, the demo reset."""
     conn = db.connect(db_url)
     db.init(conn)
-    app = FastAPI(title="Fieldwork", version="0.8.0",
-                  description="The platform deployment teams build their methodology on")
+    app = FastAPI(title="Fieldwork", version="0.9.0",
+                  description="Versioned enterprise AI workflows, Cortex authority and reviewed rollout evidence")
     app.state.conn = conn
 
     def load_tenant(tid: str):
@@ -1236,6 +1236,10 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
     beta.register(app, deps)
     from . import sow
     sow.register(app, deps)
+    from . import onboarding
+    onboarding.register(app, deps)
+    from . import ai_deployments
+    ai_deployments.register(app, deps)
 
     if background:
         @app.on_event("startup")

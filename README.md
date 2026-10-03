@@ -1,6 +1,20 @@
 # Fieldwork
 
-The deployment engine for deployment teams: run every deployment, see why it stalls, and prove what it delivered.
+The deployment layer for enterprise AI.
+
+Turn AI prototypes into governed production workflows. Fieldwork connects customer
+systems, delivery operations, versioned agents, evaluations and rollout evidence.
+Cortex evaluates what the agent is authorized to do; a separate reviewer approves
+its rollout packet.
+
+**v0.9 adds the AI workflow layer:** specifications and a deployment graph, an
+agent/model registry, change-triggered evaluation jobs, a runner contract, Cortex
+authority checks, version-bound human approvals, remediation planning and reviewed
+deployment memory. [Architecture and boundaries](docs/AI_DEPLOYMENT_LAYER.md).
+
+**Try the isolated demo:** `python scripts/ai_deployment_demo.py`. It uses synthetic
+data and calls no external models or customer systems.
+[YC application working brief](docs/YC_APPLICATION_BRIEF.md).
 
 Every software company that sells complex products has a deployment team:
 engagement managers, implementation consultants, forward-deployed engineers,
@@ -38,7 +52,7 @@ Hosted demos serve that engine themselves.
 **Deploy:** see [LAUNCH.md](LAUNCH.md): one-click Render blueprint (`render.yaml`), or `docker compose up` for Postgres locally.
 
 ```
-python -m pytest -q                                              # 187 tests on SQLite (364 with Postgres too)
+python -m pytest -q                                              # SQLite suite; adds Postgres cases when configured
 FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # plus the same tests on Postgres
 ```
 
@@ -72,6 +86,7 @@ FIELDWORK_TEST_POSTGRES=postgresql://... python -m pytest -q     # plus the same
 - **ERP billing bridge.** A sign-off goes to the ERP the statement of work is linked to, and invoiced and paid come back: **NetSuite** (completes the milestone's project task), **Certinia PSA on Salesforce** (approves the PSA milestone), **Oracle Fusion Cloud** (creates or releases the project billing event), **SAP S/4HANA Cloud** (confirms the project milestone, which releases its billing plan date) and **Workday** (reads installments and invoices from a custom report; sign-offs reach it by signed webhook). Import a statement of work straight from the ERP's project or contract.
 - **Signed event webhooks** to feed any other system, including `milestone.accepted` with the evidence fingerprint.
 - **AI tools.** An MCP server at `/mcp` works with Claude Code, Claude Desktop, Cursor, Codex, Gemini CLI, the OpenAI API and the Grok API. The console's AI tools page has copy-paste setup for each. An agent acts as its person, with their permissions, and its changes are audited under their name.
+- **Self-service setup.** Describe how your team delivers, upload active deployments, review suggested stages and column mappings, and apply the workspace setup. AI suggestions are optional and centrally configured; a guided path works without AI. [Setup and boundaries](docs/SELF_SERVICE_ONBOARDING.md).
 - **Import.** Bring deployments and tasks in from a spreadsheet.
 - **Provisioning.** The Head of Deployments (or any role given people management) sets up roles, adds people one at a time or from a CSV, and offboards them: sign-ins, sessions and tokens stop at once, open work is handed to someone who can see it (or waits in Unassigned), staffing is freed, personal calendar and mailbox connections are removed with what they collected, and the audit trail keeps everything. Reactivate any time.
 - **Open beta.** Anyone can start a workspace with GitHub or Google (`FIELDWORK_OPEN_SIGNUP=1`), invite their team by email, and send feedback from any screen. The public demo resets hourly without touching anyone's workspace.
