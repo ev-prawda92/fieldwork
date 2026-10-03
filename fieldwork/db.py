@@ -495,6 +495,18 @@ CREATE TABLE IF NOT EXISTS audit_anchors (
 );
 CREATE INDEX IF NOT EXISTS ix_anchor_tenant ON audit_anchors(tenant_id, seq)
 """),
+    (11, "self-service setup plans", """
+CREATE TABLE IF NOT EXISTS onboarding_plans (
+ id TEXT PRIMARY KEY,
+ tenant_id TEXT NOT NULL REFERENCES tenants(id),
+ actor_id TEXT NOT NULL REFERENCES users(id),
+ config_hash TEXT NOT NULL,
+ plan_json TEXT NOT NULL,
+ expires_at TEXT NOT NULL,
+ result_json TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_onboarding_tenant ON onboarding_plans(tenant_id, expires_at);
+"""),
 ]
 
 _AUTO = {"sqlite": "INTEGER PRIMARY KEY AUTOINCREMENT", "postgres": "BIGSERIAL PRIMARY KEY"}
