@@ -21,7 +21,8 @@ dependencies = [
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.1"]
-dev = ["pytest>=8.0", "psycopg[binary]>=3.1"]
+dev = ["pytest>=8.0", "psycopg[binary]>=3.1", "freezegun>=1.4", "httpx>=0.27"]
+simulate = ["freezegun>=1.4", "httpx>=0.27"]
 
 [project.scripts]
 fieldwork = "fieldwork.__main__:main"

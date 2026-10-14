@@ -42,6 +42,13 @@ def main() -> None:
     v.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
     v.add_argument("--host", default="127.0.0.1")
     v.add_argument("--db", default=None)
+    sm = sub.add_parser("simulate", help="run a delivery organisation through the platform on a simulated calendar")
+    sm.add_argument("--db", default="simulation.db", help="a fresh database file (wiped first)")
+    sm.add_argument("--projects", type=int, default=56)
+    sm.add_argument("--weeks", type=int, default=26)
+    sm.add_argument("--seed", type=int, default=2026)
+    sm.add_argument("--out", default=None, help="where to write the JSON report")
+    sm.add_argument("--quiet", action="store_true")
     m = sub.add_parser("mcp", help="MCP stdio bridge")
     m.add_argument("--url", default=os.environ.get("FIELDWORK_URL", ""))
     m.add_argument("--token", default=os.environ.get("FIELDWORK_TOKEN", ""))
@@ -64,6 +71,9 @@ def main() -> None:
             if args.engine == "census":
                 print("\n" + res["result"]["memo"])
         sys.exit(1 if res["status"] == "fail" else 0)
+    if args.cmd == "simulate":
+        from . import simulate
+        sys.exit(simulate.main(args.db, args.projects, args.weeks, args.seed, args.out, args.quiet))
     if args.cmd == "engines":
         from .engines import REGISTRY, stages
         for k in stages.STAGE_ENGINES:
