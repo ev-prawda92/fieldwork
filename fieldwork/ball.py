@@ -359,7 +359,8 @@ def register(app, d) -> None:
                                                "passed_to_them": 0, "oldest_hours": 0.0})
             p["holding"] += 1
             p["passed_to_them"] += 1 if b["out"] else 0
-            p["oldest_hours"] = max(p["oldest_hours"], b["held_hours"] or 0)
+            if b["out"]:  # only a passed ball counts as waiting on someone
+                p["oldest_hours"] = max(p["oldest_hours"], b["held_hours"] or 0)
         cutoff = ops.iso(ops.now() - timedelta(days=30))
         held: dict = {}
         seen: dict = {}

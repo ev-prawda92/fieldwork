@@ -130,6 +130,31 @@ h3{margin:0;font-size:14px;font-weight:600}
 .waiting{grid-column:2/-1;display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--muted);padding:0 0 6px}
 .chipbtn{height:26px;padding:0 10px;border-radius:13px;border:1px solid var(--line3);background:transparent;color:var(--text);font-size:12px}
 .chipbtn:hover{border-color:var(--accent);background:var(--selbg)}
+/* the ball: cool when it just landed, warm after a day, hot after three */
+.ball{width:11px;height:11px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px var(--accentbg);display:inline-block;flex-shrink:0}
+.ball.warm{background:var(--warn);box-shadow:0 0 0 3px var(--warnbg)}
+.ball.hot{background:var(--bad);box-shadow:0 0 0 3px var(--badbg);animation:ballpulse 1.8s ease-in-out infinite}
+.ball.lg{width:14px;height:14px}
+@keyframes ballpulse{50%{box-shadow:0 0 0 6px var(--badbg)}}
+.ballchip{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--text2);white-space:nowrap}
+.ballbtn{height:26px;padding:0 10px;border-radius:13px;border:1px solid var(--line3);background:transparent;color:var(--text);font-size:12px;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.ballbtn:hover{border-color:var(--accent);background:var(--selbg)}
+.ballbtn.go{border-color:var(--accent);background:var(--accentbg);color:var(--accent);font-weight:600}
+.ballbtn.go:hover{background:var(--accent);color:var(--onaccent)}
+.lane{display:flex;flex-direction:column;gap:2px;min-width:0}
+.bitem{display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:10px;align-items:start;padding:10px 0;border-top:1px solid var(--line2)}
+.bitem:first-of-type{border-top:0}
+.bitem .ball{margin-top:5px}
+.bitem .quote{font-size:12.5px;color:var(--text2);margin-top:4px;padding-left:9px;border-left:2px solid var(--line3)}
+.bitem .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.lanehead{display:flex;align-items:baseline;gap:8px;padding-bottom:6px}
+.lanehead b{font-size:22px;font-weight:600;font-family:'IBM Plex Mono',monospace}
+.catch{display:flex!important;align-items:center;gap:10px}
+.catch .av{width:26px;height:26px;border-radius:50%;background:var(--panel2);display:grid;place-items:center;font-size:10.5px;font-family:'IBM Plex Mono',monospace;color:var(--text2);flex-shrink:0}
+.catch.holding{opacity:.5;cursor:default}
+.tossball{position:fixed;z-index:60;width:14px;height:14px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px var(--accentbg);pointer-events:none;animation:toss .7s cubic-bezier(.3,.6,.4,1) forwards}
+@keyframes toss{0%{transform:translate(0,0) scale(1)}45%{transform:translate(70px,-46px) scale(1.15)}100%{transform:translate(150px,0) scale(.6);opacity:0}}
+@media (prefers-reduced-motion:reduce){.ball.hot,.tossball{animation:none}}
 .holdbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;border-radius:10px;background:var(--bluebg);border:1px solid var(--blue);color:var(--text);font-size:13px}
 .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:11.5px;color:var(--muted)}
 .legend span{display:flex;align-items:center;gap:6px}
@@ -545,6 +570,58 @@ function greeting() { const h = new Date().getHours(); return h < 12 ? "Good mor
 function dayChip() { const d = new Date(); return `<span class="mono small muted">${upper(DOW[d.getDay()])} · ${upper(MON[d.getMonth()])} ${d.getDate()}</span>`; }
 
 /* One task line: checkbox, title, deployment, stage, due, status */
+/* ============================================================ the ball */
+const ballTemp = h => h == null ? "" : h >= 72 ? "hot" : h >= 24 ? "warm" : "";
+const ballAge = h => h == null ? "" : h < 1 ? "just now" : h < 24 ? Math.round(h) + "h" : Math.round(h / 24) + "d";
+function tossFrom(el) {
+  try {
+    const r = el.getBoundingClientRect(); const b = document.createElement("div");
+    b.className = "tossball"; b.style.left = (r.left + 8) + "px"; b.style.top = (r.top + r.height / 2 - 7) + "px";
+    document.body.appendChild(b); setTimeout(() => b.remove(), 800);
+  } catch (e) {}
+}
+// What I can do with this task's ball: pass it, send it back, call it back.
+function ballActions(t, reload, { updateAny = false, compact = false } = {}) {
+  if (t.status === "done" || !t.ball || !t.assignee_id) return "";
+  const me = S.me.user.id, b = t.ball;
+  const holding = b.holder_id === me, owner = t.assignee_id === me;
+  const out = [];
+  if (holding && b.out) out.push(`<button class="ballbtn go" title="Done with your part: back to ${esc(b.from || "the owner")}" data-on="${on(async el => {
+    const r = await api(`/api/tasks/${t.id}/return`, { method: "POST", body: { note: "" } });
+    tossFrom(el); invalidate(); toast(`Sent back to ${r.holder}`); setTimeout(reload, 350); })}">↩ Send back${compact ? "" : ` to ${esc((b.from || "").split(" ")[0])}`}</button>`);
+  if (holding || owner || updateAny) out.push(`<button class="ballbtn" data-on="${on(el => passMenu(el, t, reload, { updateAny }))}">Pass ↗</button>`);
+  if (!holding && b.out && (owner || updateAny)) out.push(`<button class="ballbtn" title="Bring the ball home to ${esc(t.assignee || "the owner")}" data-on="${on(async () => {
+    await api(`/api/tasks/${t.id}/return`, { method: "POST", body: { note: "" } }); invalidate(); toast("Called back"); reload(); })}">Call back</button>`);
+  return out.join("");
+}
+async function passMenu(anchor, t, reload, { updateAny = false } = {}) {
+  const people = await api(`/api/tasks/${t.id}/catchers`);
+  const ex = $("#menu"); if (ex) ex.remove();
+  const canHand = t.assignee_id === S.me.user.id || can("task.assign");
+  const r = anchor.getBoundingClientRect();
+  const m = document.createElement("div"); m.className = "menu"; m.id = "menu";
+  m.style.cssText = `position:fixed;top:${Math.min(r.bottom + 6, innerHeight - 380)}px;left:${Math.max(16, Math.min(r.right - 300, innerWidth - 316))}px;right:auto;width:300px;max-height:360px;overflow:auto`;
+  const go = p => on(async el => {
+    const note = (val("bm_note") || "").trim(), hand = val("bm_hand");
+    const res = await api(`/api/tasks/${t.id}/${hand ? "handoff" : "pass"}`, { method: "POST", body: { to: p.id, note } });
+    m.remove(); tossFrom(anchor); invalidate();
+    toast(hand ? `Handed off: it's ${p.name.split(" ")[0]}'s now` : res.holder_id === t.assignee_id && p.id === t.assignee_id ? `Back with ${p.name}` : `Ball's with ${p.name}${p.customer_side ? ". The delay ledger has it as waiting on the customer." : ""}`);
+    setTimeout(reload, 350);
+  });
+  const row = p => `<button class="catch ${p.holding ? "holding" : ""}" ${p.holding ? "disabled" : `data-on="${go(p)}"`}><span class="av">${esc(initials(p.name))}</span><span style="flex:1;min-width:0">${esc(p.name)}${p.you ? " <span class=\"muted\">(you)</span>" : ""}<div class="xs muted">${p.holding ? "has the ball" : p.owner ? "owns it" : p.customer_side ? "customer side" : ""}</div></span>${p.holding ? `<span class="ball"></span>` : ""}</button>`;
+  const on_ = people.filter(p => p.on_deployment), off = people.filter(p => !p.on_deployment);
+  m.innerHTML = `<div class="mhead"><b style="color:var(--text)">Who's got the next step?</b><div style="margin-top:2px">${esc(t.title)}</div></div>
+    <div style="padding:4px 6px 8px"><input id="bm_note" placeholder="What you need from them (optional)" style="width:100%;height:32px" maxlength="300">
+    ${canHand ? `<label class="row xs muted" style="gap:6px;margin-top:8px"><input type="checkbox" id="bm_hand"> Hand it off instead: it becomes theirs</label>` : ""}</div>
+    ${on_.map(row).join("")}${off.length ? `<div class="mhead" style="border-top:1px solid var(--line);border-bottom:0;margin:4px 0 0">Elsewhere in ${esc(S.me.tenant.name)}</div>${off.map(row).join("")}` : ""}`;
+  document.body.appendChild(m);
+  setTimeout(() => { const n = $("#bm_note"); if (n) n.focus(); }, 0);
+}
+function ballChip(t) {
+  const b = t.ball; if (!b || t.status === "done" || !b.out) return "";
+  return `<span class="ballchip" title="Passed by ${esc(b.from || "")}${b.note ? ": " + esc(b.note) : ""}"><span class="ball ${ballTemp(b.held_hours)}"></span>${b.holder_id === S.me.user.id ? "You" : esc((b.holder || "").split(" ")[0])} · ${ballAge(b.held_hours)}</span>`;
+}
+
 function taskRow(t, { showDep = true, reload, updateAny = false, showShared = true, links = null } = {}) {
   const editable = t.assignee_id === S.me.user.id || updateAny;
   const done = t.status === "done";
@@ -567,12 +644,13 @@ function taskRow(t, { showDep = true, reload, updateAny = false, showShared = tr
       ${!showDep || t.assignee_id !== S.me.user.id ? `<span>${esc(t.assignee || "unassigned")}</span>` : ""}
       <span class="mono xs">${esc(upper(stageName(t.stage)))}</span>
       ${t.due ? `<span class="mono xs ${dueCls}">${fmtDate(t.due)}</span>` : ""}
+      ${ballChip(t)}${ballActions(t, reload, { updateAny, compact: true })}
       ${editable && !done ? `<select data-chg="${setStatus}" aria-label="Status of ${esc(t.title)}">${["open", "in_progress", "blocked", "done"].map(s => `<option value="${s}" ${s === t.status ? "selected" : ""}>${s.replace("_", " ")}</option>`).join("")}</select>` : done ? "" : `<span class="chip">${esc(t.status.replace("_", " "))}</span>`}
     </div>${waiting}</div>`;
 }
 
 /* ============================================================ home */
-const WSPAN = { kpis: 12, chain: 12, clients: 12, pipeline: 12, today: 7, my_tasks: 7, hours: 5, flags: 5, capacity: 7, unassigned: 5, delays: 5, approvals: 5, findings: 7, team: 7 };
+const WSPAN = { ball: 12, kpis: 12, chain: 12, clients: 12, pipeline: 12, today: 7, my_tasks: 7, hours: 5, flags: 5, capacity: 7, unassigned: 5, delays: 5, approvals: 5, findings: 7, team: 7 };
 
 async function homeView() {
   const widgets = S.me.home || [];
@@ -590,6 +668,7 @@ async function homeView() {
     approvals: () => get("approvals", () => api("/api/approvals")),
     dashboard: () => get("dashboard", () => api("/api/dashboard")),
     blockedOnCustomer: () => get("boc", () => api("/api/delays?status=open")),
+    ball: () => get("ball", () => api("/api/ball")),
   };
   const reload = () => route();
   const k = kind();
@@ -614,11 +693,11 @@ async function homeView() {
   let title, sub;
   const first = S.me.user.name.split(" ")[0];
   if (k === "doer") {
-    const [p, mine, boc] = await Promise.all([F.portfolio(), F.mine(), F.blockedOnCustomer()]);
+    const [p, mine, boc, bl] = await Promise.all([F.portfolio(), F.mine(), F.blockedOnCustomer(), F.ball()]);
     const open = mine.filter(t => t.status !== "done").length;
     const cust = boc.filter(x => x.owner === "customer").length;
     title = `${greeting()}, ${first}`;
-    sub = `${plural(p.deployments.length, "deployment")} · ${plural(open, "task")} open${cust ? ` · ${cust} blocked on a customer` : ""}`;
+    sub = `${bl.holding.length} in your hands · ${bl.waiting.length} out with others · ${plural(open, "task")} you own${cust ? ` · ${cust} waiting on a customer` : ""}`;
   } else if (k === "manager") {
     const [p, t] = await Promise.all([F.portfolio(), can("people.read") ? F.team() : null]);
     title = `${greeting()}, ${first}`;
@@ -666,6 +745,29 @@ function feedbackBox() {
 }
 
 const WIDGETS = {
+  async ball(F, reload) {
+    const b = await F.ball();
+    const item = (t, side) => {
+      const x = t.ball, h = x.held_hours;
+      const who = side === "hold"
+        ? (x.out ? `from ${esc(x.from || "")}` : "yours")
+        : `with ${x.holder_id === S.me.user.id ? "you" : esc(x.holder || "")}`;
+      const tp = x.out ? ballTemp(h) : "";  // only a passed ball heats up; your own work just shows its age
+      return `<div class="bitem"><span class="ball ${tp}" title="${!x.out ? "Your task" : h >= 72 ? "Sitting a while" : h >= 24 ? "Over a day" : "Fresh"}"></span>
+        <div style="min-width:0"><a href="#/dep/${esc(t.deployment_id)}" style="color:var(--text);font-weight:500">${esc(t.title)}</a>
+          <div class="small muted">${esc(t.deployment)} · ${who} · <span class="${tp === "hot" ? "bad" : tp === "warm" ? "warn" : ""}">${ballAge(h)}</span></div>
+          ${x.note ? `<div class="quote">${esc(x.note)}</div>` : ""}</div>
+        <div class="acts">${ballActions(t, reload)}</div></div>`;
+    };
+    const hot = b.holding.filter(t => t.ball.out && (t.ball.held_hours || 0) >= 72).length;
+    return `<div class="panel"><div class="phead"><div class="label">The ball</div><span class="xs muted">Pass it to whoever owns the next step. It comes back when they're done.</span></div>
+      <div class="grid g2" style="gap:28px">
+        <div class="lane"><div class="lanehead"><b>${b.holding.length}</b><span class="small muted">in your hands${hot ? ` · <span class="bad">${hot} sitting 3+ days</span>` : ""}</span></div>
+          ${b.holding.length ? b.holding.slice(0, 8).map(t => item(t, "hold")).join("") : `<div class="empty">Nothing in your hands. Nice.</div>`}</div>
+        <div class="lane"><div class="lanehead"><b>${b.waiting.length}</b><span class="small muted">out with others, coming back to you</span></div>
+          ${b.waiting.length ? b.waiting.slice(0, 8).map(t => item(t, "out")).join("") : `<div class="empty">Nothing out. Pass a task when you need someone for a step.</div>`}</div>
+      </div></div>`;
+  },
   async kpis(F) {
     const p = await F.portfolio(); const k = p.kpis; if (!k) return "";
     const stalled = p.deployments.filter(d => d.overrun).length;
@@ -1221,12 +1323,22 @@ function holdForm(d) {
     <div class="row small muted">Waiting on ${Object.entries(WHO).map(([k, l]) => `<button class="chipbtn" data-on="${put(k)}">${esc(l)}</button>`).join("")}<button class="chipbtn" data-on="${put(null)}">Not sure</button></div></div>`;
 }
 
+function ballPanel(s) {
+  if (!s) return "";
+  const max = Math.max(1, ...s.held_30d.map(x => x.hours));
+  return `<div class="panel"><div class="phead"><div class="label">Who has the ball</div><span class="mono xs muted">${plural(s.passes_30d, "pass", "passes")} in 30 d</span></div>
+    ${s.holders.length ? s.holders.map(p => `<div class="row nowrap" style="gap:10px;padding:4px 0"><span class="ball ${ballTemp(p.oldest_hours)}"></span><span style="flex:1">${p.id === S.me.user.id ? "You" : esc(p.name)}</span><span class="small muted">${plural(p.holding, "task")}${p.passed_to_them ? ` · ${p.passed_to_them} passed to them` : ""}</span><span class="mono xs ${ballTemp(p.oldest_hours) === "hot" ? "bad" : ballTemp(p.oldest_hours) === "warm" ? "warn" : "muted"}" style="width:36px;text-align:right" title="Oldest ball passed to them">${p.passed_to_them ? ballAge(p.oldest_hours) : ""}</span></div>`).join("") : `<div class="small muted">Every task is done.</div>`}
+    ${s.held_30d.length ? `<div class="label" style="margin-top:10px">Time holding passed balls · 30 d</div>${s.held_30d.slice(0, 6).map(x => `<div class="row nowrap small" style="gap:8px"><span style="width:96px;overflow:hidden;text-overflow:ellipsis">${esc((x.name || "").split(" ")[0])}</span><div style="flex:1;height:6px;border-radius:3px;background:var(--panel2)"><div style="height:6px;border-radius:3px;background:var(--accent);width:${Math.max(4, 100 * x.hours / max)}%"></div></div><span class="mono xs muted" style="width:40px;text-align:right">${ballAge(x.hours)}</span></div>`).join("")}` : ""}
+  </div>`;
+}
+
 async function depOverview(d, row, reload) {
   const id = d.id; const yc = a => d.you_can.includes(a);
   const [tasks, linkInfo, reps, flags, delays, people] = await Promise.all([
     api(`/api/tasks?deployment_id=${encodeURIComponent(id)}`), api(`/api/deployments/${id}/links`), api(`/api/deployments/${id}/reports`),
     api(`/api/flags?deployment_id=${encodeURIComponent(id)}`), api(`/api/delays?deployment_id=${encodeURIComponent(id)}`),
     can("people.read") ? api("/api/people").then(r => r.filter(x => x.active !== 0)) : []]);
+  const ballSum = await api(`/api/deployments/${id}/ball`).catch(() => null);
   const [cm, erps] = await Promise.all([api(`/api/deployments/${id}/commercials`), yc("sow.edit") ? api("/api/billing/connections").catch(() => []) : []]);
   const stage = stageOf(d.stage);
   const open = tasks.filter(t => t.status !== "done");
@@ -1285,6 +1397,7 @@ async function depOverview(d, row, reload) {
         <div class="panel"><div class="label">History</div>${d.history.map(h => `<div class="row nowrap small"><span class="mono xs muted" style="width:52px;flex-shrink:0">${fmtDate(h.at)}</span><span>${esc(h.actor)} → <b>${esc(stageName(h.to_stage))}</b>${h.note ? ` <span class="muted">· ${esc(h.note)}</span>` : ""}</span></div>`).join("")}</div>
       </div>
       <div class="stack lg">
+        ${ballPanel(ballSum)}
         ${flags.length || yc("deployment.edit") ? `${flagsPanel(flags, reload, false, true)}` : ""}
         ${yc("deployment.edit") ? `<details><summary>Raise a flag</summary><div class="panel" style="margin-top:8px"><div class="row nowrap"><select id="fl_s" style="width:110px"><option value="med">Medium</option><option value="high">High</option><option value="low">Low</option></select><input id="fl_t" placeholder="What's at risk, and why" style="flex:1" data-enter="${raise}"><button class="btn" data-on="${raise}">Raise</button></div></div></details>` : ""}
         <div class="panel"><div class="phead"><div class="label">Delays on this deployment</div><span class="mono xs muted">${num(delays.reduce((a, x) => a + x.days, 0))} d total</span></div>
