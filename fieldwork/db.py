@@ -495,6 +495,28 @@ CREATE TABLE IF NOT EXISTS audit_anchors (
 );
 CREATE INDEX IF NOT EXISTS ix_anchor_tenant ON audit_anchors(tenant_id, seq)
 """),
+    (11, "the ball: who holds each task right now, and every pass", """
+ALTER TABLE tasks ADD COLUMN holder_id TEXT;
+ALTER TABLE tasks ADD COLUMN ball_since TEXT;
+CREATE TABLE IF NOT EXISTS ball_passes (
+    id            {AUTO},
+    tenant_id     TEXT NOT NULL,
+    deployment_id TEXT NOT NULL REFERENCES deployments(id),
+    task_id       TEXT NOT NULL REFERENCES tasks(id),
+    kind          TEXT NOT NULL,
+    from_id       TEXT NOT NULL,
+    to_id         TEXT NOT NULL,
+    note          TEXT NOT NULL DEFAULT '',
+    at            TEXT NOT NULL,
+    back_at       TEXT,
+    back_by       TEXT,
+    back_how      TEXT,
+    back_note     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_ball_task ON ball_passes(tenant_id, task_id);
+CREATE INDEX IF NOT EXISTS ix_ball_open ON ball_passes(tenant_id, to_id, back_at);
+CREATE INDEX IF NOT EXISTS ix_ball_from ON ball_passes(tenant_id, from_id, back_at)
+"""),
 ]
 
 _AUTO = {"sqlite": "INTEGER PRIMARY KEY AUTOINCREMENT", "postgres": "BIGSERIAL PRIMARY KEY"}
@@ -635,7 +657,7 @@ def init(conn: DB) -> None:
 
 def reset(conn: DB) -> None:
     """Drop everything. Used by `fieldwork seed` and tests; never by the API."""
-    tables = ["audit_anchors", "milestone_packets", "milestones", "sows", "feedback", "connections", "oauth_states", "inbound_events", "time_off", "contact_signals", "deployment_stages","delays", "time_entries", "opportunities", "flags", "approvals", "checklist_items", "outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
+    tables = ["ball_passes", "audit_anchors", "milestone_packets", "milestones", "sows", "feedback", "connections", "oauth_states", "inbound_events", "time_off", "contact_signals", "deployment_stages","delays", "time_entries", "opportunities", "flags", "approvals", "checklist_items", "outbox", "task_links", "reports", "personal_tokens", "sso_states", "sessions", "tenant_secrets", "engine_credentials", "audit", "findings",
               "tasks", "stage_events", "deployment_members", "deployments", "customers", "users",
               "tenants", "schema_migrations"]
     with conn.lock:

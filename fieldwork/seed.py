@@ -300,7 +300,7 @@ def seed(db_url) -> dict:
 
 DEMO_TENANTS = ("ten_meridian", "ten_orbital")
 # Children before parents, so foreign keys hold on both databases.
-_TENANT_TABLES = ("audit_anchors", "milestone_packets", "milestones", "sows", "feedback", "contact_signals", "time_off", "inbound_events", "oauth_states", "connections",
+_TENANT_TABLES = ("ball_passes", "audit_anchors", "milestone_packets", "milestones", "sows", "feedback", "contact_signals", "time_off", "inbound_events", "oauth_states", "connections",
                   "checklist_items", "approvals", "flags", "opportunities", "time_entries", "delays", "reports",
                   "task_links", "outbox", "deployment_stages", "findings", "tasks", "stage_events")
 
@@ -431,6 +431,33 @@ def build_demo(conn) -> dict:
                 updated_at=TS(blocked_since[tid]) if tid in blocked_since else made, visibility=vis)
             audit.record(conn, T, "usr_marcus", "task.create", tid,
                          {"deployment": did, "assignee": who, "title": title, "visibility": vis})
+
+        # The ball in play: a few tasks out with the person who owns the next step, and one round trip done.
+        passes = [  # task, from, to, days ago, note, days ago it came back (None: still out)
+            ("tsk_006", "usr_jordan", "usr_marcus", 4, "Which payer scopes did the customer approve?", 3),
+            ("tsk_001", "usr_maya", "usr_rosa", 1, "Need the exception categories Harrisburg actually uses", None),
+            ("tsk_002", "usr_rosa", "usr_ruth", 3, "Pick a time for the AP lead walkthrough", None),
+            ("tsk_009", "usr_maya", "usr_lena", 2, "Need the security sign-off date before I book it", None),
+            ("tsk_010", "usr_rosa", "usr_sam", 0.25, "Can you pull the ops system list from the kickoff notes?", None),
+        ]
+        for tid, frm, to, ago, note, came_back in passes:
+            dep_id = next(t[0] for i, t in enumerate(tasks, 1) if f"tsk_{i:03d}" == tid)
+            ins("ball_passes", tenant_id=T, deployment_id=dep_id, task_id=tid, kind="pass", from_id=frm, to_id=to,
+                note=note, at=TS(ago), back_at=TS(came_back) if came_back is not None else None,
+                back_by=to if came_back is not None else None,
+                back_how="returned" if came_back is not None else None,
+                back_note="Read-only on Coverage and Patient; written up in the scope doc" if came_back is not None else "")
+            if came_back is None:
+                conn.execute("UPDATE tasks SET holder_id=?, ball_since=? WHERE id=?", (to, TS(ago), tid))
+            else:
+                conn.execute("UPDATE tasks SET ball_since=? WHERE id=?", (TS(came_back), tid))
+            audit.record(conn, T, frm, "ball.pass", tid, {"from": frm, "to": to, "note": note})
+        nf = conn.execute("SELECT * FROM deployments WHERE id='dep_northfield'").fetchone()
+        sid, _ = ops.open_span(conn, T, nf, signal="waiting_on_customer", dedupe_key="ball:tsk_002",
+                               owner_hint="customer", reason="Pick a time for the AP lead walkthrough",
+                               started_at=datetime.now(timezone.utc) - timedelta(days=3), stage="adopt",
+                               evidence="Ball passed to Ruth Albrecht on “Walk Harrisburg AP lead through exception queue”")
+        conn.execute("UPDATE delays SET proposal_basis=? WHERE id=?", ("the ball is with someone on the customer side", sid))
 
         # A pushed result from the customer-side latency probe, still internal.
         finding = {"summary": "p95 1840 ms against a 1500 ms SLO · 3.1% errors over 12,480 calls",

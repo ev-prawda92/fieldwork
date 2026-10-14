@@ -63,6 +63,9 @@ def enqueue(conn, tenant_id: str, kind: str, payload: dict) -> None:
                  " VALUES (?,?,?,?,?,?,?)", (tenant_id, kind, json.dumps(payload), "pending", 0, ts, ts))
 
 
+BALL_DMS = ("task.passed", "task.returned")  # the person the ball lands with gets a DM
+
+
 def emit(conn, cfg: dict, tenant_id: str, event: str, data: dict) -> None:
     """Fan an event out to Slack and subscribed webhooks. Call inside the change's transaction."""
     if event not in config.EVENTS:
@@ -71,7 +74,8 @@ def emit(conn, cfg: dict, tenant_id: str, event: str, data: dict) -> None:
     slack = ints.get("slack", {})
     if slack.get("enabled") and event in slack.get("events", []):
         enqueue(conn, tenant_id, "slack", {"event": event, "data": data})
-    if event == "task.assigned" and data.get("assignee_id") and conn.execute(
+    if (data.get("assignee_id") if event == "task.assigned" else data.get("to_id") if event in BALL_DMS else None) \
+            and conn.execute(
             "SELECT 1 FROM connections WHERE tenant_id=? AND provider='slack' AND status='active' AND user_id IS NULL",
             (tenant_id,)).fetchone():
         enqueue(conn, tenant_id, "slack_dm", {"event": event, "data": data})
@@ -110,6 +114,8 @@ def slack_text(event: str, d: dict) -> str:
         "task.assigned": f":inbox_tray: *{d.get('assignee')}* was assigned “{d.get('title')}” · {link}",
         "task.blocked": f":no_entry: *Blocked:* “{d.get('title')}” ({d.get('assignee') or 'unassigned'}) · {link}",
         "task.done": f":white_check_mark: {who} finished “{d.get('title')}” · {link}",
+        "task.passed": f":arrow_heading_down: {who} passed the ball to *{d.get('to')}* on “{d.get('title')}”{(': ' + d['note']) if d.get('note') else ''} · {link}",
+        "task.returned": f":leftwards_arrow_with_hook: {who} sent the ball back to *{d.get('to')}* on “{d.get('title')}”{(': ' + d['note']) if d.get('note') else ''} · {link}",
         "finding.created": f":mag: *{d.get('engine_name')}* result waiting for confirmation: {d.get('summary', '')} · {link}",
         "finding.confirmed": f":ballot_box_with_check: {who} confirmed “{d.get('title')}” · {link}",
         "finding.shared": f":handshake: {who} shared “{d.get('title')}” with the customer · {link}",
