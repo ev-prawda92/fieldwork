@@ -24,7 +24,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from . import audit, config, crypto, db, engines, events, ops, plugins, sso, trackers
+from . import audit, ball, config, crypto, db, engines, events, ops, plugins, sso, trackers
 from .engines import stages
 
 FRONTEND = Path(__file__).resolve().parent / "static"
@@ -493,6 +493,9 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
             open_tasks = conn.execute("SELECT * FROM tasks WHERE tenant_id=? AND assignee_id=? AND status!='done'",
                                       (c.tenant_id, user_id)).fetchall()
             moved, unassigned = [], []
+            for held in conn.execute("SELECT * FROM tasks WHERE tenant_id=? AND holder_id=? AND status!='done'",
+                                     (c.tenant_id, user_id)).fetchall():  # balls they hold go home
+                ball.settle(conn, c.tenant_id, c.tenant_name, c.cfg, held, c.uid, "offboarded")
             for t in open_tasks:
                 if heir and (t["visibility"] == "shared" or sees_internal_tasks(c, heir["role"], t["deployment_id"], heir["id"])):
                     conn.execute("UPDATE tasks SET assignee_id=?, updated_at=? WHERE id=?", (heir["id"], ts, t["id"]))
@@ -785,6 +788,7 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
         dep = conn.execute("SELECT name FROM deployments WHERE id=?", (r["deployment_id"],)).fetchone()
         d["assignee"] = who["name"] if who else None
         d["deployment"] = dep["name"] if dep else ""
+        d["ball"] = ball.describe(conn, r)
         return d
 
     def sees_internal_tasks(c: Ctx, user_role: str, dep_id: str, user_id: str) -> bool:
@@ -921,6 +925,10 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
                          (*changes.values(), task_id))
             c.log("task.update", task_id, {k: v for k, v in changes.items() if k != "updated_at"})
             merged = {**dict(t), **changes}
+            if changes.get("status") == "done" or ("assignee_id" in changes
+                                                    and changes["assignee_id"] != t["assignee_id"]):
+                ball.settle(conn, c.tenant_id, c.tenant_name, c.cfg, t, c.uid,
+                            "done" if changes.get("status") == "done" else "reassigned")
             if "status" in changes:
                 ops.on_task_status(conn, c.tenant_id, c.tenant_name, c.cfg, {**merged, "status": t["status"]},
                                    changes["status"])
@@ -1236,6 +1244,7 @@ def create_app(db_url: str | None = None, background: bool = False) -> FastAPI:
     beta.register(app, deps)
     from . import sow
     sow.register(app, deps)
+    ball.register(app, deps)
 
     if background:
         @app.on_event("startup")

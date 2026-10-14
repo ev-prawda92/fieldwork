@@ -305,11 +305,12 @@ class Slack(Provider):
                             lambda v: ({"task_id": v.split("|")[0]}, {"waiting_on": v.split("|")[1]})),
         "task.start": ("PATCH", "/api/tasks/{task_id}", lambda v: ({"task_id": v}, {"status": "in_progress"})),
         "task.done": ("PATCH", "/api/tasks/{task_id}", lambda v: ({"task_id": v}, {"status": "done"})),
+        "task.return": ("POST", "/api/tasks/{task_id}/return", lambda v: ({"task_id": v}, {"note": "Sent back from Slack"})),
     }
     DONE_TEXT = {"delay.confirm": "confirmed the owner", "delay.reassign": "reassigned the delay",
                  "flag.take": "took this", "flag.resolve": "resolved this", "approval.approve": "approved",
                  "approval.reject": "rejected", "task.waiting_on": "said who it's waiting on",
-                 "task.start": "started this", "task.done": "finished this"}
+                 "task.start": "started this", "task.done": "finished this", "task.return": "sent the ball back"}
 
     def on_action(self, conn, payload: dict) -> None:
         act = payload["actions"][0]
@@ -468,16 +469,29 @@ def deliver(conn, tenant_id: str, kind: str, p: dict) -> bool:
     if kind == "slack_dm":
         if not cx.settings.get("dm_assignments", True):
             return True
+        d = p["data"]
+        ball_dm = p["event"] in events.BALL_DMS
         u = conn.execute("SELECT email FROM users WHERE id=? AND tenant_id=? AND active=1",
-                         (p["data"].get("assignee_id"), tenant_id)).fetchone()
+                         (d.get("to_id") if ball_dm else d.get("assignee_id"), tenant_id)).fetchone()
         sid = SLACK.slack_user_for(conn, cx, u["email"]) if u else None
         if not sid:
             return True  # nobody to message; not an error
-        d = p["data"]
-        text = (f":inbox_tray: {d.get('actor', 'Someone')} assigned you “{d.get('title')}” on "
-                f"<{events.dep_link(d['deployment_id'])}|{d.get('deployment', 'a deployment')}>")
+        where = f"<{events.dep_link(d['deployment_id'])}|{d.get('deployment', 'a deployment')}>"
+        note = f"\n> {d['note']}" if d.get("note") else ""
+        if p["event"] == "task.passed":
+            text = f":arrow_heading_down: {d.get('actor', 'Someone')} passed you the ball on “{d.get('title')}” · {where}{note}"
+        elif p["event"] == "task.returned":
+            text = f":leftwards_arrow_with_hook: {d.get('actor', 'Someone')} sent the ball back to you on “{d.get('title')}” · {where}{note}"
+        else:
+            text = f":inbox_tray: {d.get('actor', 'Someone')} assigned you “{d.get('title')}” on {where}"
         blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
-        if d.get("task_id"):
+        if d.get("task_id") and p["event"] == "task.passed":
+            blocks.append({"type": "actions", "elements": [
+                {"type": "button", "text": {"type": "plain_text", "text": "Send it back"}, "action_id": "fw:task.return",
+                 "value": d["task_id"], "style": "primary"},
+                {"type": "button", "text": {"type": "plain_text", "text": "Open"}, "action_id": "fw:open",
+                 "url": events.dep_link(d["deployment_id"])}]})
+        elif d.get("task_id"):
             blocks.append({"type": "actions", "elements": [
                 {"type": "button", "text": {"type": "plain_text", "text": "Start"}, "action_id": "fw:task.start",
                  "value": d["task_id"], "style": "primary"},

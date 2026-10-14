@@ -378,6 +378,11 @@ def apply_inbound(conn, tenant_id: str, provider: str, changes: list[tuple[str, 
                          (_now(), task["id"], provider))
             audit.record(conn, tenant_id, f"tracker:{provider}", "task.update", task["id"],
                          {k: v for k, v in upd.items() if k != "updated_at"} | {"origin": provider})
+            if upd.get("status") == "done" or upd.get("assignee_id"):
+                from . import ball
+                tn = conn.execute("SELECT name FROM tenants WHERE id=?", (tenant_id,)).fetchone()
+                ball.settle(conn, tenant_id, tn["name"], cfg, task, f"tracker:{provider}",
+                            "done" if upd.get("status") == "done" else "reassigned")
             if "status" in upd:
                 from . import ops
                 t = conn.execute("SELECT name FROM tenants WHERE id=?", (tenant_id,)).fetchone()

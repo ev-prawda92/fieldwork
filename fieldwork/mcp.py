@@ -77,6 +77,19 @@ TOOLS = [
                                                           "change_board", "model_access", "vendor_error"]},
                        reason={"type": "string", "optional": True},
                        evidence={"type": "string", "optional": True})},
+    {"name": "my_ball", "description": "The ball: tasks in my hands right now (passed to me first, then oldest), and "
+     "tasks I've passed to others that are waiting to come back to me.", "inputSchema": _s()},
+    {"name": "pass_ball", "description": "Pass a task's ball to the person who owns the next step. It comes back to "
+     "me when they send it back. Use who_can_catch to find people who can take it.",
+     "inputSchema": _s(task_id={"type": "string"}, to={"type": "string", "description": "the person's user id"},
+                       note={"type": "string", "optional": True, "description": "what you need from them"})},
+    {"name": "send_ball_back", "description": "I've done my part: send the ball back to whoever passed it to me. "
+     "The task's owner can use this to call a ball back home.",
+     "inputSchema": _s(task_id={"type": "string"}, note={"type": "string", "optional": True})},
+    {"name": "hand_off_task", "description": "Hand ownership of a task to someone else: it's theirs now.",
+     "inputSchema": _s(task_id={"type": "string"}, to={"type": "string"}, note={"type": "string", "optional": True})},
+    {"name": "who_can_catch", "description": "People who can take the ball on a task, with whether they're staffed "
+     "on the deployment and who holds it now.", "inputSchema": _s(task_id={"type": "string"})},
     {"name": "portfolio", "description": "Every deployment I can see on the chain: stage, days in stage against "
      "target, who owns the current delay, burn, flags, and headline numbers.", "inputSchema": _s()},
 ]
@@ -118,6 +131,16 @@ def _route(name: str, a: dict) -> tuple[str, str, dict | None]:
     if name == "log_delay":
         return "POST", f"/api/deployments/{dep}/delays", {"signal": a["signal"], "reason": a.get("reason", ""),
                                                            "evidence": a.get("evidence", "")}
+    if name == "my_ball":
+        return "GET", "/api/ball", None
+    if name == "pass_ball":
+        return "POST", f"/api/tasks/{a['task_id']}/pass", {"to": a["to"], "note": a.get("note", "")}
+    if name == "send_ball_back":
+        return "POST", f"/api/tasks/{a['task_id']}/return", {"note": a.get("note", "")}
+    if name == "hand_off_task":
+        return "POST", f"/api/tasks/{a['task_id']}/handoff", {"to": a["to"], "note": a.get("note", "")}
+    if name == "who_can_catch":
+        return "GET", f"/api/tasks/{a['task_id']}/catchers", None
     if name == "portfolio":
         return "GET", "/api/portfolio", None
     raise KeyError(name)

@@ -42,6 +42,7 @@ WIDGETS = {
     "pipeline": "Sales pipeline and staffing checks",
     "delays": "Who owns the delay",
     "approvals": "Agent actions waiting for approval",
+    "ball": "The ball: in your hands, and out with others",
 }
 
 # Actions whose "own" scope has no meaning (they aren't about one deployment).
@@ -53,6 +54,8 @@ EVENTS = {
     "task.assigned": "A task is assigned to someone",
     "task.blocked": "A task is marked blocked",
     "task.done": "A task is completed",
+    "task.passed": "Someone passes the ball on a task",
+    "task.returned": "The ball comes back on a task",
     "finding.created": "An engine result is waiting for confirmation",
     "finding.confirmed": "A finding is confirmed",
     "finding.shared": "A finding is shared with the customer",
@@ -153,12 +156,12 @@ DEFAULT_CONFIG: dict = {
     },
     "views": {
         "head":                      ["kpis", "chain", "flags", "capacity", "delays", "findings", "pipeline"],
-        "engagement_manager":        ["kpis", "chain", "capacity", "unassigned", "flags", "approvals",
+        "engagement_manager":        ["kpis", "ball", "chain", "capacity", "unassigned", "flags", "approvals",
                                       "findings", "today"],
-        "implementation_consultant": ["clients", "my_tasks", "hours", "today"],
-        "fde":                       ["clients", "my_tasks", "hours", "today"],
-        "ai_engineer":               ["clients", "my_tasks", "hours", "approvals", "today"],
-        "customer":                  ["clients", "my_tasks"],
+        "implementation_consultant": ["ball", "clients", "my_tasks", "hours", "today"],
+        "fde":                       ["ball", "clients", "my_tasks", "hours", "today"],
+        "ai_engineer":               ["ball", "clients", "my_tasks", "hours", "approvals", "today"],
+        "customer":                  ["ball", "clients", "my_tasks"],
     },
     "stages": [
         {"key": "discover",  "name": "Discover",  "engines": ["census"], "target_days": 14,

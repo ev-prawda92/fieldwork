@@ -142,7 +142,7 @@ def test_white_label(client):
 
 def test_views_per_role(client):
     d = client.get("/api/dashboard", headers=H("customer")).json()
-    assert d["widgets"] == ["clients", "my_tasks"] and "kpis" not in d and "team" not in d
+    assert d["widgets"] == ["ball", "clients", "my_tasks"] and "kpis" not in d and "team" not in d
     d = client.get("/api/dashboard", headers=H("head")).json()
     assert {"kpis", "chain", "findings"} <= set(d) and "capacity" in d["widgets"]
 
